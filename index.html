@@ -203,6 +203,12 @@ async function tokenInfo(addr){
   return p;
 }
 
+function activeLiquidityUsd(Lpool,P,d0,d1,bandPct){
+  const k=Math.pow(10,d1-d0), pr=P*k;
+  const pl=pr*(1-bandPct/200), pu=pr*(1+bandPct/200);
+  const den=2*Math.sqrt(pr)-pr/Math.sqrt(pu)-Math.sqrt(pl);
+  return den>0 ? Lpool*den/Math.pow(10,d1) : 0;
+}
 function amounts(L,P,tl,tu,d0,d1){
   const k=Math.pow(10,d1-d0);
   const sp=Math.sqrt(P*k), spl=Math.sqrt(Math.pow(1.0001,tl)), spu=Math.sqrt(Math.pow(1.0001,tu));
@@ -375,7 +381,7 @@ function tileHtml(p){
       <div class="row"><span class="k">Комиссии в токенах</span>
         <span class="v">${p.feeE.toFixed(6)} ${p.t0.symbol} + ${p.feeU.toFixed(2)} ${p.t1.symbol}</span></div>
       <div class="row"><span class="k">Активная ликвидность пула</span>
-        <span class="v">${p.poolLiq.toExponential(2)}</span></div>
+        <span class="v">${fmtUsd(activeLiquidityUsd(p.poolLiq,p.price,p.t0.decimals,p.t1.decimals,1.0))} (±0,5%)</span></div>
       <div class="row vol-row"><span class="k">Оборот пула</span>
         <span class="v vol-val">нажмите для расчёта</span></div>
       <p class="note mono">${p.pool}</p>
