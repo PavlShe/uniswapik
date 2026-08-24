@@ -139,17 +139,18 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       </div>
     </div>
     <div class="periods">
-      <div class="pbox"><div class="pk">День</div><div class="pv" id="pDay">—</div></div>
-      <div class="pbox"><div class="pk">Неделя</div><div class="pv" id="pWeek">—</div></div>
-      <div class="pbox"><div class="pk">Месяц</div><div class="pv" id="pMonth">—</div></div>
-      <div class="pbox"><div class="pk">Всё время</div><div class="pv" id="pAll">—</div></div>
+      <div class="pbox"><div class="pk">Депозиты</div><div class="pv" id="pDay">—</div></div>
+      <div class="pbox"><div class="pk">Активы сейчас</div><div class="pv" id="pWeek">—</div></div>
+      <div class="pbox"><div class="pk">Газ (оценка)</div><div class="pv" id="pMonth">—</div></div>
+      <div class="pbox"><div class="pk">APR</div><div class="pv" id="pAll">—</div></div>
     </div>
-    <p class="note">День/неделя/месяц — <b>доходность от комиссий</b>, посчитана
-      сразу из уже загруженных данных (накопленные комиссии и возраст позиции),
-      без ожидания. Это не полный P&L: без архивного RPC нельзя узнать, сколько
-      стоила позиция раньше, поэтому движение цены базового актива сюда не входит
-      — только доход от комиссий по текущему темпу накопления. «Всё время» —
-      фактический показатель с открытия позиции, не проекция.</p>
+    <p class="note"><b>Депозиты</b> — сумма входящих переводов WETH/USD₮0 на
+      кошелёк (с бирж и других адресов), без учёта возвратов из менеджера позиций.
+      <b>Активы сейчас</b> — кошелёк (WETH, USD₮0, ETH на газ) плюс стоимость
+      открытых позиций. <b>Газ</b> — не точная сумма: публичный RPC не отдаёт
+      список отправленных транзакций, поэтому это количество транзакций (nonce),
+      умноженное на среднюю стоимость операции. <b>APR</b> — (активы − депозиты
+      − газ) / депозиты, приведено к годовым по времени с первого депозита.</p>
   </div>
 
   <div class="card" id="recCard" style="display:none">
@@ -183,6 +184,13 @@ const RATE = 3.9947;
 const SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 const COLLECT_TOPIC = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01";
 const INCREASE_TOPIC = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f";
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+// проект работает с этой парой независимо от того, открыта ли сейчас позиция —
+// нужны фиксированные адреса, чтобы депозиты/баланс считались и без открытой LP
+const WETH_ADDR = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1";
+const USDT_ADDR = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9";
+const WETH_USDT_POOL = "0x641c00a822e8b671738d32a431a4fb6074e5c79d";
+const AVG_TX_GAS_USD = 0.18;   // средняя стоимость операции бота, измерено ранее
 const SEL = {slot0:"0x3850c7bd", liq:"0x1a686502", bal:"0x70a08231",
   tokenOf:"0x2f745c59", positions:"0x99fbab88", collect:"0xfc6f7865",
   getPool:"0x1698ee82", symbol:"0x95d89b41", decimals:"0x313ce567"};
@@ -384,6 +392,79 @@ async function loadPositionDetails(p, owner){
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
+async function scanIncomingTransfers(tokenAddr, decimals, owner){
+  // сумма входящих переводов на кошелёк, ИСКЛЮЧАЯ то, что вернул сам менеджер
+  // позиций (иначе закрытие LP засчиталось бы как «депозит»)
+  const from = 0;
+  try{
+    const logs = await rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
+      address: tokenAddr, topics:[TRANSFER_TOPIC, null, "0x"+pad(owner)]}]);
+    let total = 0, earliestBlock = null;
+    for(const l of logs){
+      const sender = "0x"+l.topics[1].slice(26);
+      if(sender.toLowerCase() === NPM.toLowerCase()) continue;   // возврат из пула — не депозит
+      total += Number(U(words(l.data)[0])) / Math.pow(10, decimals);
+      const bn = Number(l.blockNumber);
+      if(earliestBlock===null || bn<earliestBlock) earliestBlock = bn;
+    }
+    return {total, earliestBlock};
+  }catch(e){ return {total: 0, earliestBlock: null, error: true}; }
+}
+
+async function loadCapitalStats(detailed){
+  try{
+    const [s0, wethBal, usdtBal, nativeBal, nonce, depW, depU] = await Promise.all([
+      call(WETH_USDT_POOL, SEL.slot0),
+      call(WETH_ADDR, SEL.bal+pad(OWNER)),
+      call(USDT_ADDR, SEL.bal+pad(OWNER)),
+      rpc("eth_getBalance",[OWNER,"latest"]),
+      rpc("eth_getTransactionCount",[OWNER,"latest"]),
+      scanIncomingTransfers(WETH_ADDR, 18, OWNER),
+      scanIncomingTransfers(USDT_ADDR, 6, OWNER),
+    ]);
+    const w0 = words(s0);
+    const sq = Number(U(w0[0]))/2**96;
+    const price = sq*sq*1e12;   // WETH(18) / USDT(6)
+
+    const walletWeth = Number(U(words(wethBal)[0]))/1e18;
+    const walletUsdt = Number(U(words(usdtBal)[0]))/1e6;
+    const nativeEth = Number(BigInt(nativeBal))/1e18;
+    const txCount = Number(BigInt(nonce));
+    const poolValue = (detailed||[]).reduce((s,p)=>s+p.value,0);
+
+    const assetsNow = walletWeth*price + walletUsdt + nativeEth*price + poolValue;
+    const depositsUsd = depW.total*price + depU.total;
+    const gasEstUsd = txCount * AVG_TX_GAS_USD;
+
+    let earliestBlock = null;
+    for(const d of [depW, depU]) if(d.earliestBlock!==null &&
+        (earliestBlock===null || d.earliestBlock<earliestBlock)) earliestBlock = d.earliestBlock;
+
+    const head = Number(await rpc("eth_blockNumber",[]));
+    const headTs = Number((await rpc("eth_getBlockByNumber",["latest",false])).timestamp);
+    const ageDays = earliestBlock!==null ? (head-earliestBlock)/RATE/86400 : null;
+
+    const net = assetsNow - depositsUsd - gasEstUsd;
+    const apr = (depositsUsd>0 && ageDays!==null && ageDays>0)
+      ? net/depositsUsd*365/ageDays*100 : null;
+
+    const setPBox = (id, text, cls) => {
+      const el = document.getElementById(id);
+      el.textContent = text; el.className = "pv " + cls;
+    };
+    setPBox("pDay", depositsUsd>0 ? money(depositsUsd) : "н/д", "");
+    setPBox("pWeek", money(assetsNow), "");
+    setPBox("pMonth", "≈"+money(gasEstUsd)+` (${txCount} тр.)`, "");
+    setPBox("pAll", apr!==null ? (apr>=0?"+":"")+apr.toFixed(1)+"%" : "н/д",
+      apr===null ? "dim" : (apr>=0?"good":"bad"));
+  }catch(e){
+    ["pDay","pWeek","pMonth","pAll"].forEach(id=>{
+      document.getElementById(id).textContent = "ошибка";
+      document.getElementById(id).className = "pv dim";
+    });
+  }
+}
+
 async function positionAgeDays(tokenId){
   // возраст = время с первого IncreaseLiquidity (открытие позиции)
   const head = Number(await rpc("eth_blockNumber",[]));
@@ -447,35 +528,7 @@ async function poolVolume(pool, d0, hours=2){
   return {vol0: vol0*24/hours, nswaps:n, missing, chunks:chunks.length};
 }
 
-// ---------- доходность портфеля по уже загруженным данным (без ожидания) ----------
-// период = темп накопления комиссий (капитал-взвешенный по позициям с известным
-// возрастом), спроецированный на 1/7/30 дней. Не включает движение цены базового
-// актива — этого нельзя узнать без архивного RPC, только доход от комиссий.
-function renderFeeBasedPeriods(detailed, ages, realized){
-  const known = detailed.map((p,i)=>({p, age: ages[i], fees: p.feesUsd+realized[i]}))
-    .filter(x=>x.age!==null && x.age>0 && x.p.value>0);
-  const boxes = [["pDay",1,false],["pWeek",7,false],["pMonth",30,false]];
-  if(!known.length){
-    [...boxes.map(b=>b[0]), "pAll"].forEach(id=>{
-      const el = document.getElementById(id);
-      el.textContent = "н/д"; el.className = "pv dim";
-    });
-    return;
-  }
-  const sumValue = known.reduce((s,x)=>s+x.p.value,0);
-  const sumFees = known.reduce((s,x)=>s+x.fees,0);
-  const avgAgeDays = known.reduce((s,x)=>s+x.age*x.p.value,0)/sumValue;
-  const dailyFrac = sumFees/sumValue/avgAgeDays;    // доля от капитала в день
 
-  function setBox(id, frac){
-    const el = document.getElementById(id);
-    const dollars = frac*sumValue, pct = frac*100;
-    el.className = "pv " + (frac>0?"good":"");
-    el.textContent = (frac>=0?"+":"")+fmtUsd(dollars)+" ("+(pct>=0?"+":"")+pct.toFixed(2)+"%)";
-  }
-  for(const [id, days] of boxes) setBox(id, dailyFrac*days);
-  setBox("pAll", sumFees/sumValue);   // фактически накопленное с открытия, не проекция
-}
 
 // ---------- рендер плитки ----------
 function tileHtml(p){
@@ -547,18 +600,20 @@ async function load(){
   try{
     const basics = await discoverPositions(OWNER);
     document.getElementById("loading").textContent = `найдено позиций: ${basics.length}`;
-    if(!basics.length){
-      tilesEl.innerHTML = `<div class="card"><p class="note">Открытых позиций
-        Uniswap v3 на этом адресе не найдено.</p></div>`;
-      document.getElementById("summary").style.display="none";
-      document.getElementById("foot").textContent = "Обновлено "+new Date().toLocaleTimeString("ru");
-      return;
-    }
     const detailed = await Promise.all(basics.map(p=>loadPositionDetails(p, OWNER)));
     detailed.sort((a,b)=>b.value-a.value);
 
-    tilesEl.innerHTML = detailed.map(p=>`<div class="tile">${tileHtml(p)}</div>`).join("");
-    [...tilesEl.children].forEach((el,i)=>bindTile(el, detailed[i]));
+    if(!detailed.length){
+      tilesEl.innerHTML = `<div class="card"><p class="note">Открытых позиций
+        Uniswap v3 на этом адресе не найдено.</p></div>`;
+      document.getElementById("recCard").style.display = "none";
+    } else {
+      tilesEl.innerHTML = detailed.map(p=>`<div class="tile">${tileHtml(p)}</div>`).join("");
+      [...tilesEl.children].forEach((el,i)=>bindTile(el, detailed[i]));
+    }
+
+    document.getElementById("summary").style.display = "block";
+    loadCapitalStats(detailed);   // не блокирует остальной рендер — своя обработка ошибок внутри
 
     const totalValue = detailed.reduce((s,p)=>s+p.value,0);
     const totalUnclaimed = detailed.reduce((s,p)=>s+p.feesUsd,0);
@@ -619,7 +674,6 @@ async function load(){
       detailed.length===1?"позиция":detailed.length<5?"позиции":"позиций"}`;
     document.getElementById("sumFees").textContent = money(totalFeesAllTime);
 
-    renderFeeBasedPeriods(detailed, ages, realized);
 
     document.getElementById("loading").textContent =
       `${detailed.length} ${detailed.length===1?"позиция":"позиций"} загружено`;
