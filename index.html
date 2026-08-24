@@ -173,11 +173,15 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="rec-field"><span class="sub">Версия</span>
         <select id="recVer"><option value="">—</option>
           <option value="v3">v3</option><option value="v4">v4</option></select></div>
+      <div class="rec-field"><span class="sub">Комиссия</span>
+        <select id="recFee"><option value="">авто</option>
+          <option value="100">0.01%</option><option value="500">0.05%</option>
+          <option value="3000">0.3%</option><option value="10000">1%</option></select></div>
       <div class="rec-field"><span class="sub">Цель, %/мес</span>
         <input id="recTarget" type="text" inputmode="decimal" placeholder="10"></div>
     </div>
     <button id="recCalc">Рассчитать</button>
-    <div id="recBody" class="note" style="margin-top:12px">Заполните все четыре поля.</div>
+    <div id="recBody" class="note" style="margin-top:12px">Заполните монеты, версию и цель. Комиссия по умолчанию подбирается сама.</div>
     <p class="note">Ширина подобрана так, чтобы <b>валовые</b> комиссии при
       текущем обороте пула и текущей активной ликвидности давали заданный
       процент в месяц. Это без учёта потерь на движении цены и газа на
@@ -398,8 +402,9 @@ function parseRecTarget(){
   return (isFinite(v) && v > 0) ? v : null;
 }
 
-// перебираем тиры, оставляем живые, по каждому меряем оборот и берём лучший по APR
-async function findBestPool(coinA, coinB, ver){
+// перебираем тиры, оставляем живые, по каждому меряем оборот и берём лучший по APR.
+// если тир задан явно, перебора нет — считаем ровно по нему
+async function findBestPool(coinA, coinB, ver, feeSel){
   const map = ver === "v4" ? COIN_V4 : COIN_V3;
   const a = map[coinA], b = map[coinB];
   const [c0, c1] = a.toLowerCase() < b.toLowerCase() ? [a,b] : [b,a];
@@ -407,8 +412,11 @@ async function findBestPool(coinA, coinB, ver){
   const d0 = COIN_DEC[n0], d1 = COIN_DEC[n1];
   const cands = [];
 
+  const tiers  = feeSel ? V3_TIERS.filter(f=>f===feeSel) : V3_TIERS;
+  const combos = feeSel ? V4_COMBOS.filter(([f])=>f===feeSel) : V4_COMBOS;
+
   if(ver === "v3"){
-    const pools = await Promise.all(V3_TIERS.map(fee=>
+    const pools = await Promise.all(tiers.map(fee=>
       call(FACTORY, SEL_GETPOOL+pad(c0)+pad(c1)+padN(fee)).catch(()=>null)));
     await Promise.all(pools.map(async (r, i)=>{
       if(!r) return;
@@ -420,11 +428,11 @@ async function findBestPool(coinA, coinB, ver){
       const L = Number(U(words(lq)[0]));
       if(L <= 0) return;
       const sq = Number(U(words(s0)[0]))/2**96;
-      cands.push({pool, isV4:false, fee:V3_TIERS[i], poolLiq:L,
+      cands.push({pool, isV4:false, fee:tiers[i], poolLiq:L,
         price: sq*sq*Math.pow(10,d0-d1), tick: Number(S(words(s0)[1]))});
     }));
   } else {
-    await Promise.all(V4_COMBOS.map(async ([fee, sp])=>{
+    await Promise.all(combos.map(async ([fee, sp])=>{
       const pk = pad(c0)+pad(c1)+padN(fee)+padN(sp)+pad("0x"+"0".repeat(40));
       const poolId = "0x"+keccak256Hex(pk);
       const [lq, s0] = await Promise.all([
@@ -466,11 +474,12 @@ async function calcRecommendation(){
   const A = document.getElementById("recA").value;
   const B = document.getElementById("recB").value;
   const ver = document.getElementById("recVer").value;
+  const feeSel = Number(document.getElementById("recFee").value) || null;
   const target = parseRecTarget();
   const body = document.getElementById("recBody");
 
   if(!A || !B || !ver || target===null){
-    body.innerHTML = '<span class="warn">Заполните все четыре поля: две монеты, версию и цель.</span>';
+    body.innerHTML = '<span class="warn">Заполните монеты, версию и цель.</span>';
     return;
   }
   if(A === B){
@@ -479,9 +488,11 @@ async function calcRecommendation(){
   }
   body.innerHTML = 'ищу пул и считаю оборот… <span class="spin"></span>';
   try{
-    const p = await findBestPool(A, B, ver);
-    if(!p){ body.innerHTML = '<span class="warn">Живого пула для этой пары в '+
-      ver+' не нашлось.</span>'; return; }
+    const p = await findBestPool(A, B, ver, feeSel);
+    if(!p){ body.innerHTML = '<span class="warn">' + (feeSel
+      ? 'Пула '+A+'/'+B+' с комиссией '+(feeSel/1e4)+'% в '+ver+
+        ' нет или в нём нет ликвидности. Попробуйте другой тир или «авто».'
+      : 'Живого пула для этой пары в '+ver+' не нашлось.') + '</span>'; return; }
     if(!p.volUsd){ body.innerHTML = '<span class="warn">Пул найден, но оборот за '+
       'последние 2 часа нулевой — рассчитать доходность нельзя.</span>'; return; }
 
