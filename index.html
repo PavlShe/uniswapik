@@ -56,13 +56,6 @@ td:first-child,th:first-child{text-align:left}
 .pbox .pk{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 .pbox .pv{font-size:14px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums}
 .pbox .pv.dim{color:var(--dim);font-weight:500;font-size:12px}
-.keyrow{display:flex;gap:6px;margin:8px 0 2px}
-.keyrow input{flex:1;min-width:0;background:var(--card2,#1a1a1a);border:1px solid var(--bd,#333);
-  border-radius:8px;padding:7px 9px;color:var(--fg,#eee);font-size:11px}
-.keyrow button{background:var(--acc,#2b6);border:0;border-radius:8px;color:#fff;
-  padding:7px 12px;font-size:11px;font-weight:600}
-.warn-i{color:var(--bad,#e66)}
-.pv-sub{font-size:9.5px;color:var(--dim);font-weight:500;margin-top:2px;line-height:1.25}
 
 /* --- плитки позиций --- */
 .tiles{display:flex;flex-direction:column;gap:8px}
@@ -153,24 +146,6 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="pbox"><div class="pk">Газ (оценка)</div><div class="pv" id="pMonth">—</div></div>
       <div class="pbox"><div class="pk">APR</div><div class="pv" id="pAll">—</div></div>
     </div>
-    <div class="keyrow">
-      <input id="arbiIn" placeholder="свой ключ Arbiscan (необязательно — общий уже встроен)">
-      <button id="arbiSave">ок</button>
-    </div>
-    <p class="note"><b>Депозиты</b> — входящие переводы WETH/USD₮0 (с бирж и других
-      адресов, без возвратов из менеджеров позиций v3/v4) плюс нативный ETH,
-      каждое пополнение — <b>по курсу на момент прихода</b>. Нативный ETH не
-      порождает событий в блокчейне, а возвраты из v4 идут внутренними
-      транзакциями, поэтому без индексатора он не виден — данные берутся из
-      Arbiscan по общему ключу, встроенному при публикации. Своё поле ниже нужно
-      только если хотите считать по собственному ключу: он останется в вашем
-      браузере и будет иметь приоритет. С ключом газ тоже считается точно по всем
-      транзакциям, а не только по затронувшим позиции.
-      <b>Активы сейчас</b> — кошелёк плюс стоимость открытых позиций (v3 и v4).
-      <b>Газ</b> — точная сумма по чекам транзакций, затронувших ваши позиции;
-      если часть чеков прочитать не удалось, показывается со знаком ≈.
-      <b>APR</b> — (активы − депозиты) / депозиты, приведено к годовым по времени
-      с первого депозита.</p>
   </div>
 
   <div class="card" id="recCard">
@@ -552,16 +527,6 @@ document.getElementById("changeAddr").onclick = () => {
   document.getElementById("addrIn").value = OWNER || "";
   showSetup(true);
 };
-// в приложении из одного файла исключение на верхнем уровне гасит всю страницу,
-// поэтому необязательная часть интерфейса не должна ронять остальное
-try{
- const ai=document.getElementById("arbiIn"), ab=document.getElementById("arbiSave");
- if(ai){ ai.value = arbiKey();
-   ab.onclick = () => { const v=ai.value.trim();
-     if(v) localStorage.setItem("arbikey", v); else localStorage.removeItem("arbikey");
-     ab.textContent="✓"; setTimeout(()=>ab.textContent="ок",1200); load(); };
-   ai.addEventListener("keydown", e=>{ if(e.key==="Enter") ab.click(); }); }
-}catch(e){ console.error("поле ключа Arbiscan не инициализировано:", e); }
 document.getElementById("refresh").onclick = load;
 
 // ---------- обнаружение позиций ----------
@@ -880,17 +845,10 @@ async function loadCapitalStats(detailed){
     };
     const el = document.getElementById("pDay");
     el.className = "pv";
-    const ethSub = nativeEthIn===null
-      ? `<span class="warn-i">ETH не учтён — ${scan && scan.error
-           ? "Arbiscan: "+scan.error : "нужен ключ Arbiscan"}</span>`
-      : (nativeEthIn>0 ? " · ETH "+nativeEthIn.toFixed(6)+" ("+money(nativeDepositUsd)+
-          (nativeBlocks[0]&&nativeBlocks[0].price?" по "+money(nativeBlocks[0].price):"")+")" : "");
-    el.innerHTML = (depositsUsd>0 ? money(depositsUsd) : "н/д") +
-      `<div class="pv-sub">${depU.total>0?"USDT "+depU.total.toFixed(2):""}` +
-      `${depW.total>0?" · WETH "+depW.total.toFixed(4):""}${ethSub}</div>`;
+    el.textContent = depositsUsd>0 ? money(depositsUsd) : "н/д";
     setPBox("pWeek", money(assetsNow), "");
     if(assetsNow > 0) portfolioCapital = assetsNow;   // доля в пуле зависит от размера капитала
-    setPBox("pMonth", (gasExact?"":"≈")+money(gasEstUsd)+` (${gasTxs} тр.)`, "");
+    setPBox("pMonth", (gasExact?"":"≈")+money(gasEstUsd), "");
     setPBox("pAll", apr!==null ? (apr>=0?"+":"")+apr.toFixed(1)+"%" : "н/д",
       apr===null ? "dim" : (apr>=0?"good":"bad"));
   }catch(e){
