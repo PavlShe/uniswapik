@@ -56,6 +56,7 @@ td:first-child,th:first-child{text-align:left}
 .pbox .pk{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 .pbox .pv{font-size:14px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums}
 .pbox .pv.dim{color:var(--dim);font-weight:500;font-size:12px}
+.pv-sub{font-size:9.5px;color:var(--dim);font-weight:500;margin-top:2px;line-height:1.25}
 
 /* --- плитки позиций --- */
 .tiles{display:flex;flex-direction:column;gap:8px}
@@ -100,11 +101,13 @@ td:first-child,th:first-child{text-align:left}
 .rec-range{font-size:12.5px;color:var(--dim);margin-top:2px}
 .rec-apr{font-weight:700;font-size:14px;text-align:right;flex-shrink:0;
   white-space:nowrap}
-.rec-target{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-.rec-target input{width:60px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);
-  background:var(--bg);color:var(--ink);font:14px ui-monospace,Menlo,monospace;
-  text-align:center}
-.rec-target button{width:auto;padding:8px 14px;font-size:13px;flex-shrink:0}
+.rec-form{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.rec-field{display:flex;flex-direction:column;gap:3px}
+.rec-field .sub{font-size:11px}
+.rec-field select,.rec-field input{width:100%;padding:9px 8px;border-radius:8px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);
+  font:14px -apple-system,BlinkMacSystemFont,sans-serif}
+.rec-field input{font-family:ui-monospace,Menlo,monospace;text-align:center}
 .rec-warn{color:var(--warn);font-size:11.5px;margin-top:2px}
 input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);
   background:var(--bg);color:var(--ink);font:13px ui-monospace,Menlo,monospace}
@@ -144,23 +147,36 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="pbox"><div class="pk">Газ (оценка)</div><div class="pv" id="pMonth">—</div></div>
       <div class="pbox"><div class="pk">APR</div><div class="pv" id="pAll">—</div></div>
     </div>
-    <p class="note"><b>Депозиты</b> — сумма входящих переводов WETH/USD₮0 на
-      кошелёк (с бирж и других адресов), без учёта возвратов из менеджера позиций.
-      <b>Активы сейчас</b> — кошелёк (WETH, USD₮0, ETH на газ) плюс стоимость
-      открытых позиций. <b>Газ</b> — не точная сумма: публичный RPC не отдаёт
-      список отправленных транзакций, поэтому это количество транзакций (nonce),
-      умноженное на среднюю стоимость операции. <b>APR</b> — (активы − депозиты
-      − газ) / депозиты, приведено к годовым по времени с первого депозита.</p>
+    <p class="note"><b>Депозиты</b> — входящие переводы WETH/USD₮0 (с бирж и
+      других адресов, без возвратов из менеджера позиций) плюс полученный
+      нативный ETH. У ETH нет события Transfer, поэтому он восстановлен по
+      тождеству «осталось на балансе + израсходовано на газ».
+      <b>Активы сейчас</b> — кошелёк плюс стоимость открытых позиций (v3 и v4).
+      <b>Газ</b> — точная сумма по чекам транзакций, затронувших ваши позиции;
+      если часть чеков прочитать не удалось, показывается со знаком ≈.
+      <b>APR</b> — (активы − депозиты) / депозиты, приведено к годовым по времени
+      с первого депозита.</p>
   </div>
 
-  <div class="card" id="recCard" style="display:none">
+  <div class="card" id="recCard">
     <div class="lbl">Рекомендуемый диапазон</div>
-    <div class="rec-target">
-      <span class="sub">Цель, % в месяц (валовые)</span>
-      <input id="recTarget" type="text" inputmode="decimal" value="10">
-      <button id="recCalc">Рассчитать</button>
+    <div class="rec-form">
+      <div class="rec-field"><span class="sub">Монета 1</span>
+        <select id="recA"><option value="">—</option>
+          <option value="ETH">ETH</option><option value="USDC">USDC</option>
+          <option value="USDT">USDT</option></select></div>
+      <div class="rec-field"><span class="sub">Монета 2</span>
+        <select id="recB"><option value="">—</option>
+          <option value="ETH">ETH</option><option value="USDC">USDC</option>
+          <option value="USDT">USDT</option></select></div>
+      <div class="rec-field"><span class="sub">Версия</span>
+        <select id="recVer"><option value="">—</option>
+          <option value="v3">v3</option><option value="v4">v4</option></select></div>
+      <div class="rec-field"><span class="sub">Цель, %/мес</span>
+        <input id="recTarget" type="text" inputmode="decimal" placeholder="10"></div>
     </div>
-    <div id="recBody" class="note">считаю оборот…</div>
+    <button id="recCalc">Рассчитать</button>
+    <div id="recBody" class="note" style="margin-top:12px">Заполните все четыре поля.</div>
     <p class="note">Ширина подобрана так, чтобы <b>валовые</b> комиссии при
       текущем обороте пула и текущей активной ликвидности давали заданный
       процент в месяц. Это без учёта потерь на движении цены и газа на
@@ -191,9 +207,67 @@ const WETH_ADDR = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1";
 const USDT_ADDR = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9";
 const WETH_USDT_POOL = "0x641c00a822e8b671738d32a431a4fb6074e5c79d";
 const AVG_TX_GAS_USD = 0.18;   // средняя стоимость операции бота, измерено ранее
+// --- Uniswap v4: синглтон-архитектура, состояние читается из StateView по poolId ---
+const V4PM = "0xd88F38F930b7952f2DB2432Cb002E7abbF3dD869";
+const STATEVIEW = "0x76fd297e2d437cd7f76d50f01afe6160f86e9990";
+const V4_POOLMANAGER = "0x360e68faccca8ca495c1b759fd9eee466db9fb32";
+const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
+const SEL4 = {ppi:"0x7ba03aad", posLiq:"0x1efeed33", ownerOf:"0x6352211e",
+              slot0:"0xc815641c", liq:"0xfa6793d5"};
 const SEL = {slot0:"0x3850c7bd", liq:"0x1a686502", bal:"0x70a08231",
   tokenOf:"0x2f745c59", positions:"0x99fbab88", collect:"0xfc6f7865",
   getPool:"0x1698ee82", symbol:"0x95d89b41", decimals:"0x313ce567"};
+
+// ---------- keccak-256 (нужен для poolId в Uniswap v4) ----------
+const K_RC = [1n,0x8082n,0x800000000000808An,0x8000000080008000n,0x808Bn,0x80000001n,
+  0x8000000080008081n,0x8000000000008009n,0x8An,0x88n,0x80008009n,0x8000000An,
+  0x8000808Bn,0x800000000000008Bn,0x8000000000008089n,0x8000000000008003n,
+  0x8000000000008002n,0x8000000000000080n,0x800An,0x800000008000000An,
+  0x8000000080008081n,0x8000000000008080n,0x80000001n,0x8000000080008008n];
+const K_R = [[0,36,3,41,18],[1,44,10,45,2],[62,6,43,15,61],[28,55,25,21,56],[27,20,39,8,14]];
+const M64 = (1n<<64n)-1n;
+const krol = (x,n)=> n===0 ? x : (((x<<BigInt(n)) | (x>>BigInt(64-n))) & M64);
+
+function keccak256Bytes(bytes){
+  const A = [[0n,0n,0n,0n,0n],[0n,0n,0n,0n,0n],[0n,0n,0n,0n,0n],
+             [0n,0n,0n,0n,0n],[0n,0n,0n,0n,0n]];
+  const rate = 136;
+  const pad = [...bytes, 0x01];
+  while(pad.length % rate !== 0) pad.push(0x00);
+  pad[pad.length-1] |= 0x80;
+  for(let off=0; off<pad.length; off+=rate){
+    for(let i=0;i<rate/8;i++){
+      let lane=0n;
+      for(let b=7;b>=0;b--) lane = (lane<<8n) | BigInt(pad[off+i*8+b]);
+      A[i%5][Math.floor(i/5)] ^= lane;
+    }
+    for(let rnd=0;rnd<24;rnd++){
+      const C=[0n,0n,0n,0n,0n];
+      for(let x=0;x<5;x++) C[x]=A[x][0]^A[x][1]^A[x][2]^A[x][3]^A[x][4];
+      const D=[0n,0n,0n,0n,0n];
+      for(let x=0;x<5;x++) D[x]=C[(x+4)%5] ^ krol(C[(x+1)%5],1);
+      for(let x=0;x<5;x++) for(let y=0;y<5;y++) A[x][y]^=D[x];
+      const B=[[0n,0n,0n,0n,0n],[0n,0n,0n,0n,0n],[0n,0n,0n,0n,0n],
+               [0n,0n,0n,0n,0n],[0n,0n,0n,0n,0n]];
+      for(let x=0;x<5;x++) for(let y=0;y<5;y++)
+        B[y][(2*x+3*y)%5] = krol(A[x][y], K_R[x][y]);
+      for(let x=0;x<5;x++) for(let y=0;y<5;y++)
+        A[x][y] = B[x][y] ^ ((~B[(x+1)%5][y] & M64) & B[(x+2)%5][y]);
+      A[0][0] ^= K_RC[rnd];
+    }
+  }
+  let out="";
+  for(let i=0;i<4;i++){
+    let lane=A[i%5][Math.floor(i/5)];
+    for(let b=0;b<8;b++){ out += Number((lane>>BigInt(b*8)) & 0xffn).toString(16).padStart(2,"0"); }
+  }
+  return out;
+}
+function keccak256Hex(hexNo0x){
+  const bytes=[];
+  for(let i=0;i<hexNo0x.length;i+=2) bytes.push(parseInt(hexNo0x.substr(i,2),16));
+  return keccak256Bytes(bytes);
+}
 
 let rpcIdx = 0;
 async function rpc(method, params){
@@ -217,6 +291,7 @@ const words = h => { h=h.replace(/^0x/,""); const o=[];
   for(let i=0;i<h.length;i+=64) o.push(h.slice(i,i+64)); return o; };
 const U = w => BigInt("0x"+w);
 const S = w => { const v=U(w), M=1n<<255n; return v>=M ? v-(1n<<256n) : v; };
+const S24 = v => v >= (1n<<23n) ? v-(1n<<24n) : v;   // int24 из упакованного слова
 function hexToBytes(h){
   const n=h.length/2, a=new Uint8Array(n);
   for(let i=0;i<n;i++) a[i]=parseInt(h.substr(i*2,2),16);
@@ -245,6 +320,8 @@ const t2p = (t,d0,d1) => Math.pow(1.0001,t)*Math.pow(10,d0-d1);
 const tokenCache = new Map();
 async function tokenInfo(addr){
   const k = addr.toLowerCase();
+  if(k === "0x0000000000000000000000000000000000000000")
+    return {symbol:"ETH", decimals:18};   // в v4 нативный ETH участвует напрямую
   if(tokenCache.has(k)) return tokenCache.get(k);
   const p = (async()=>{
     const [sym,dec] = await Promise.all([call(addr,SEL.symbol),call(addr,SEL.decimals)]);
@@ -286,40 +363,142 @@ else if (matchMedia("(prefers-color-scheme:dark)").matches)
 
 let OWNER = new URLSearchParams(location.search).get("a") || localStorage.getItem("owner") || "";
 const RE = /^0x[0-9a-fA-F]{40}$/;
-let recData = [];   // {p, volUsd, missing} на пул — оборот кешируется, ширина пересчитывается по вводу
+let portfolioCapital = 500;   // для расчёта доли в пуле; уточняется из активов
+
+const COIN_V3 = {ETH:"0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+                 USDC:"0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+                 USDT:"0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"};
+const COIN_V4 = {...COIN_V3, ETH:"0x0000000000000000000000000000000000000000"};
+const COIN_DEC = {ETH:18, USDC:6, USDT:6};
+const V3_TIERS = [100,500,3000,10000];
+const V4_COMBOS = [[100,1],[500,10],[3000,60],[10000,200],[8,1]];
+const SEL_GETPOOL = "0x1698ee82";
 
 function parseRecTarget(){
   const raw = (document.getElementById("recTarget").value || "").replace(",", ".");
   const v = parseFloat(raw);
-  return (isFinite(v) && v > 0) ? v : 10;
+  return (isFinite(v) && v > 0) ? v : null;
 }
 
-function renderRecRows(targetMonthPct){
-  const targetYear = targetMonthPct * 12;
-  for(const {p, volUsd, missing} of recData){
-    const row = document.querySelector(`[data-rec="${p.pool}"]`);
-    if(!row) continue;
-    const w = widthForTargetApr(targetYear, p.price, p.poolLiq,
-      p.fee/1e6, volUsd, p.value, p.t0.decimals, p.t1.decimals);
+// перебираем тиры, оставляем живые, по каждому меряем оборот и берём лучший по APR
+async function findBestPool(coinA, coinB, ver){
+  const map = ver === "v4" ? COIN_V4 : COIN_V3;
+  const a = map[coinA], b = map[coinB];
+  const [c0, c1] = a.toLowerCase() < b.toLowerCase() ? [a,b] : [b,a];
+  const [n0, n1] = a.toLowerCase() < b.toLowerCase() ? [coinA,coinB] : [coinB,coinA];
+  const d0 = COIN_DEC[n0], d1 = COIN_DEC[n1];
+  const cands = [];
+
+  if(ver === "v3"){
+    const pools = await Promise.all(V3_TIERS.map(fee=>
+      call(FACTORY, SEL_GETPOOL+pad(c0)+pad(c1)+padN(fee)).catch(()=>null)));
+    await Promise.all(pools.map(async (r, i)=>{
+      if(!r) return;
+      const pool = "0x"+words(r)[0].slice(24);
+      if(/^0x0+$/.test(pool)) return;
+      const [lq, s0] = await Promise.all([
+        call(pool, SEL.liq).catch(()=>null), call(pool, SEL.slot0).catch(()=>null)]);
+      if(!lq || !s0) return;
+      const L = Number(U(words(lq)[0]));
+      if(L <= 0) return;
+      const sq = Number(U(words(s0)[0]))/2**96;
+      cands.push({pool, isV4:false, fee:V3_TIERS[i], poolLiq:L,
+        price: sq*sq*Math.pow(10,d0-d1), tick: Number(S(words(s0)[1]))});
+    }));
+  } else {
+    await Promise.all(V4_COMBOS.map(async ([fee, sp])=>{
+      const pk = pad(c0)+pad(c1)+padN(fee)+padN(sp)+pad("0x"+"0".repeat(40));
+      const poolId = "0x"+keccak256Hex(pk);
+      const [lq, s0] = await Promise.all([
+        call(STATEVIEW, SEL4.liq+poolId.slice(2)).catch(()=>null),
+        call(STATEVIEW, SEL4.slot0+poolId.slice(2)).catch(()=>null)]);
+      if(!lq || !s0) return;
+      const L = Number(U(words(lq)[0]));
+      if(L <= 0) return;
+      const sq = Number(U(words(s0)[0]))/2**96;
+      cands.push({pool:poolId, isV4:true, fee, tickSpacing:sp, poolLiq:L,
+        price: sq*sq*Math.pow(10,d0-d1), tick: Number(S24(U(words(s0)[1]) & 0xFFFFFFn))});
+    }));
+  }
+  if(!cands.length) return null;
+
+  // оборот меряем только у трёх крупнейших — иначе слишком много запросов
+  cands.sort((x,y)=>y.poolLiq-x.poolLiq);
+  const top = cands.slice(0,3);
+  await Promise.all(top.map(async c=>{
+    try{
+      const v = await poolVolume(c.pool, d0, 2, c.isV4);
+      c.volUsd = v.vol0 * c.price;
+      c.missing = v.missing;
+      c.nswaps = v.nswaps;
+    }catch(e){ c.volUsd = 0; }
+  }));
+  // лучший = дающий наибольший валовый APR на единицу капитала
+  top.forEach(c=>{
+    c.score = grossAprYear(10, c.price, c.poolLiq, c.fee/1e6,
+      c.volUsd||0, portfolioCapital, d0, d1);
+  });
+  top.sort((x,y)=>y.score-x.score);
+  const deepest = top.reduce((m,c)=>c.poolLiq>m.poolLiq?c:m, top[0]);
+  return {...top[0], d0, d1, n0, n1,
+    notDeepest: deepest.pool !== top[0].pool ? deepest : null};
+}
+
+async function calcRecommendation(){
+  const A = document.getElementById("recA").value;
+  const B = document.getElementById("recB").value;
+  const ver = document.getElementById("recVer").value;
+  const target = parseRecTarget();
+  const body = document.getElementById("recBody");
+
+  if(!A || !B || !ver || target===null){
+    body.innerHTML = '<span class="warn">Заполните все четыре поля: две монеты, версию и цель.</span>';
+    return;
+  }
+  if(A === B){
+    body.innerHTML = '<span class="warn">Монеты должны быть разными.</span>';
+    return;
+  }
+  body.innerHTML = 'ищу пул и считаю оборот… <span class="spin"></span>';
+  try{
+    const p = await findBestPool(A, B, ver);
+    if(!p){ body.innerHTML = '<span class="warn">Живого пула для этой пары в '+
+      ver+' не нашлось.</span>'; return; }
+    if(!p.volUsd){ body.innerHTML = '<span class="warn">Пул найден, но оборот за '+
+      'последние 2 часа нулевой — рассчитать доходность нельзя.</span>'; return; }
+
+    const w = widthForTargetApr(target*12, p.price, p.poolLiq, p.fee/1e6,
+      p.volUsd, portfolioCapital, p.d0, p.d1);
     const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
-    const achieved = grossAprYear(w, p.price, p.poolLiq, p.fee/1e6, volUsd,
-      p.value, p.t0.decimals, p.t1.decimals);
-    const unreachable = Math.abs(achieved/12 - targetMonthPct) > targetMonthPct*0.1 + 0.5;
-    row.querySelector(".rec-range").innerHTML =
-      `ширина ${w.toFixed(1)}% · $${lo.toLocaleString("ru",{maximumFractionDigits:0})}`+
-      ` … $${hi.toLocaleString("ru",{maximumFractionDigits:0})}`+
-      (missing?` (оборот частично)`:``)+
-      (unreachable?`<div class="rec-warn">цель недостижима при текущем обороте — `+
-        `показана ближайшая граница диапазона расчёта</div>`:``);
-    const el = row.querySelector(".rec-apr");
-    el.textContent = `~${(achieved/12).toFixed(1)}%/мес`;
-    el.className = "rec-apr " + (unreachable ? "warn" : "good");
+    const achieved = grossAprYear(w, p.price, p.poolLiq, p.fee/1e6, p.volUsd,
+      portfolioCapital, p.d0, p.d1);
+    const unreachable = Math.abs(achieved/12 - target) > target*0.1 + 0.5;
+    const dp = p.price < 10 ? 4 : 0;
+    body.innerHTML = `
+      <div class="rec-row"><div>
+        <div class="rec-pair">${p.n0}/${p.n1} · ${(p.fee/1e4).toFixed(p.fee<100?4:2)}% · ${ver}</div>
+        <div class="rec-range">ширина <b>${w.toFixed(1)}%</b> ·
+          $${lo.toLocaleString("ru",{maximumFractionDigits:dp})} …
+          $${hi.toLocaleString("ru",{maximumFractionDigits:dp})}</div>
+        <div class="rec-range">цена ${p.n0}: $${p.price.toLocaleString("ru",
+          {maximumFractionDigits: p.price<10?4:2})} · оборот ${fmtUsd(p.volUsd)}/сут
+          (${p.nswaps} свопов за 2ч) · капитал ${money(portfolioCapital)}</div>
+        ${p.notDeepest?'<div class="rec-warn">выбран тир '+(p.fee/1e4).toFixed(2)+
+          '% — у него лучше отношение комиссий к ликвидности, но он тоньше '+
+          'самого крупного тира '+(p.notDeepest.fee/1e4).toFixed(2)+'% '+
+          '('+p.nswaps+' свопов против '+p.notDeepest.nswaps+'). Выход из тонкого '+
+          'пула дороже, а оценка оборота по нему менее устойчива.</div>':''}
+        ${unreachable?'<div class="rec-warn">цель недостижима при текущем обороте — '+
+          'показана ближайшая граница</div>':''}
+      </div><div class="rec-apr ${unreachable?"warn":"good"}">~${(achieved/12).toFixed(1)}%/мес</div></div>`;
+  }catch(e){
+    body.innerHTML = '<span class="err">Ошибка: '+String(e.message||e)+'</span>';
   }
 }
 
-document.getElementById("recCalc").onclick = () => renderRecRows(parseRecTarget());
+document.getElementById("recCalc").onclick = calcRecommendation;
 document.getElementById("recTarget").addEventListener("keydown", e=>{
-  if(e.key === "Enter") renderRecRows(parseRecTarget());
+  if(e.key === "Enter") calcRecommendation();
 });
 
 function showSetup(on){
@@ -353,15 +532,70 @@ async function discoverPositions(owner){
   const idRaws = await Promise.all(idCalls);
   const ids = idRaws.map(r=>U(words(r)[0]));
   const posRaws = await Promise.all(ids.map(id=>call(NPM, SEL.positions+padN(id))));
-  const out = [];
+  const out = [], closed = [];
   for(let i=0;i<ids.length;i++){
     const w = words(posRaws[i]);
     const L = Number(U(w[7]));
-    if(L===0) continue;                       // закрытые пропускаем
-    out.push({id: ids[i], token0:"0x"+w[2].slice(24), token1:"0x"+w[3].slice(24),
-      fee: Number(U(w[4])), tl: Number(S(w[5])), tu: Number(S(w[6])), L});
+    const rec = {id: ids[i], token0:"0x"+w[2].slice(24), token1:"0x"+w[3].slice(24),
+      fee: Number(U(w[4])), tl: Number(S(w[5])), tu: Number(S(w[6])), L};
+    (L===0 ? closed : out).push(rec);
   }
+  out.closedPositions = closed;
   return out;
+}
+
+// ---------- Uniswap v4 ----------
+async function discoverV4Positions(owner){
+  // в v4 PositionManager нет tokenOfOwnerByIndex — ищем через Transfer-логи
+  let logs;
+  try{
+    logs = await rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
+      address: V4PM, topics:[TRANSFER_TOPIC, null, "0x"+pad(owner)]}]);
+  }catch(e){ return []; }
+  const ids = [...new Set(logs.map(l=>U(l.topics[3].replace(/^0x/,"")).toString()))];
+  const out = [], closed4 = [];
+  await Promise.all(ids.map(async idStr=>{
+    const id = BigInt(idStr);
+    try{
+      // позицию могли передать дальше — проверяем текущего владельца
+      const own = await call(V4PM, SEL4.ownerOf+padN(id));
+      if(("0x"+words(own)[0].slice(24)).toLowerCase() !== owner.toLowerCase()) return;
+      const [raw, liqRaw] = await Promise.all([
+        call(V4PM, SEL4.ppi+padN(id)), call(V4PM, SEL4.posLiq+padN(id))]);
+      if(!raw || raw.length < 2+6*64) return;
+      const w = words(raw);
+      const L = Number(U(words(liqRaw)[0]));
+      const info = U(w[5]);
+      const tl = Number(S24((info>>8n) & 0xFFFFFFn));
+      const tu = Number(S24((info>>32n) & 0xFFFFFFn));
+      const poolId = "0x"+keccak256Hex(w.slice(0,5).join(""));
+      (L===0 ? closed4 : out).push({id, isV4:true, poolId, pool:poolId,
+        token0:"0x"+w[0].slice(24), token1:"0x"+w[1].slice(24),
+        fee:Number(U(w[2])), tickSpacing:Number(S24(U(w[3]) & 0xFFFFFFn)),
+        hooks:"0x"+w[4].slice(24), tl, tu, L});
+    }catch(e){}
+  }));
+  out.closedPositions = closed4;
+  return out;
+}
+
+async function loadV4Details(p, owner){
+  const [t0,t1,s0,lq] = await Promise.all([
+    tokenInfo(p.token0), tokenInfo(p.token1),
+    call(STATEVIEW, SEL4.slot0 + p.poolId.replace(/^0x/,"")),
+    call(STATEVIEW, SEL4.liq + p.poolId.replace(/^0x/,""))]);
+  const w0 = words(s0);
+  const sq = Number(U(w0[0]))/2**96;
+  const price = sq*sq*Math.pow(10, t0.decimals - t1.decimals);
+  const tick = Number(S24(U(w0[1]) & 0xFFFFFFn));
+  const poolLiq = Number(U(words(lq)[0]));
+  const [e,u] = amounts(p.L, price, p.tl, p.tu, t0.decimals, t1.decimals);
+  const value = e*price + u;
+  const inRange = tick>=p.tl && tick<=p.tu;
+  // несобранные комиссии в v4 требуют математики feeGrowthInside — честно помечаем как неизвестные
+  return {...p, t0, t1, price, tick, poolLiq, e, u, value,
+    feeE:0, feeU:0, feesUsd:0, feesUnknown:true, inRange,
+    lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
 async function loadPositionDetails(p, owner){
@@ -411,6 +645,63 @@ async function scanIncomingTransfers(tokenAddr, decimals, owner){
   }catch(e){ return {total: 0, earliestBlock: null, error: true}; }
 }
 
+async function exactLpGasUsd(priceEth){
+  // точный газ по чекам транзакций, затронувших наши позиции.
+  // список отправленных транзакций публичный RPC не отдаёт, но хеши LP-операций
+  // можно взять из событий менеджера — это почти вся активность этого кошелька
+  const head = Number(await rpc("eth_blockNumber",[]));
+  const from = Math.max(0, head - Math.floor(400*86400*RATE));
+  const fb = "0x"+from.toString(16);
+  // 1) свои tokenId берём из Transfer с фильтром по владельцу (лёгкий запрос)
+  const [xferV3, xferV4] = await Promise.all([
+    rpc("eth_getLogs",[{fromBlock:fb, toBlock:"latest", address:NPM,
+      topics:[TRANSFER_TOPIC, null, "0x"+pad(OWNER)]}]).catch(()=>[]),
+    rpc("eth_getLogs",[{fromBlock:fb, toBlock:"latest", address:V4PM,
+      topics:[TRANSFER_TOPIC, null, "0x"+pad(OWNER)]}]).catch(()=>[]),
+  ]);
+  const hashes = new Set();
+  const v3Ids = [];
+  for(const l of xferV3){ hashes.add(l.transactionHash);
+    v3Ids.push(U(l.topics[3].replace(/^0x/,""))); }
+  for(const l of xferV4){ hashes.add(l.transactionHash); }
+  // 2) Increase/Collect запрашиваем ПО КОНКРЕТНЫМ tokenId — иначе запрос по всем
+  //    позициям всех пользователей за 400 дней уходит в таймаут
+  const perId = await Promise.all(v3Ids.flatMap(id=>[
+    rpc("eth_getLogs",[{fromBlock:fb, toBlock:"latest", address:NPM,
+      topics:[INCREASE_TOPIC, "0x"+padN(id)]}]).catch(()=>[]),
+    rpc("eth_getLogs",[{fromBlock:fb, toBlock:"latest", address:NPM,
+      topics:[COLLECT_TOPIC, "0x"+padN(id)]}]).catch(()=>[]),
+  ]));
+  for(const logs of perId) for(const l of logs) hashes.add(l.transactionHash);
+  if(!hashes.size) return {usd:0, txs:0, exact:true};
+  const list = [...hashes];
+  let weiTotal = 0n, got = 0;
+  const CH = 20;
+  for(let i=0;i<list.length;i+=CH){
+    const batch = list.slice(i,i+CH);
+    const rec = await Promise.all(batch.map(h=>
+      rpc("eth_getTransactionReceipt",[h]).catch(()=>null)));
+    for(const r of rec){
+      if(!r || !r.gasUsed || !r.effectiveGasPrice) continue;
+      weiTotal += BigInt(r.gasUsed) * BigInt(r.effectiveGasPrice);
+      got++;
+    }
+  }
+  const measured = Number(weiTotal)/1e18*priceEth;
+  // approve и свопы не создают событий менеджера, поэтому часть транзакций
+  // не попадает в выборку — дотягиваем по средней до полного nonce
+  let total = measured, exact = got===list.length, txsAll = got;
+  try{
+    const nonce = Number(BigInt(await rpc("eth_getTransactionCount",[OWNER,"latest"])));
+    if(nonce > got && got > 0){
+      total = measured/got*nonce;
+      exact = false;
+      txsAll = nonce;
+    }
+  }catch(e){}
+  return {usd: total, txs: txsAll, measuredTxs: got, exact};
+}
+
 async function loadCapitalStats(detailed){
   try{
     const [s0, wethBal, usdtBal, nativeBal, nonce, depW, depU] = await Promise.all([
@@ -433,8 +724,15 @@ async function loadCapitalStats(detailed){
     const poolValue = (detailed||[]).reduce((s,p)=>s+p.value,0);
 
     const assetsNow = walletWeth*price + walletUsdt + nativeEth*price + poolValue;
-    const depositsUsd = depW.total*price + depU.total;
-    const gasEstUsd = txCount * AVG_TX_GAS_USD;
+    // точный газ по чекам; если что-то не получилось прочитать — падаем на оценку
+    let gasInfo;
+    try{ gasInfo = await exactLpGasUsd(price); }
+    catch(e){ gasInfo = {usd: txCount*AVG_TX_GAS_USD, txs: txCount, exact:false}; }
+    const gasEstUsd = gasInfo.usd;
+    // нативный ETH приходит без события Transfer — восстанавливаем по тождеству:
+    // получено = осталось на балансе + израсходовано на газ
+    const nativeDepositUsd = nativeEth*price + gasEstUsd;
+    const depositsUsd = depW.total*price + depU.total + nativeDepositUsd;
 
     let earliestBlock = null;
     for(const d of [depW, depU]) if(d.earliestBlock!==null &&
@@ -444,7 +742,9 @@ async function loadCapitalStats(detailed){
     const headTs = Number((await rpc("eth_getBlockByNumber",["latest",false])).timestamp);
     const ageDays = earliestBlock!==null ? (head-earliestBlock)/RATE/86400 : null;
 
-    const net = assetsNow - depositsUsd - gasEstUsd;
+    // газ уже учтён внутри depositsUsd (через восстановленный нативный ETH),
+    // повторно вычитать его нельзя — иначе двойной счёт
+    const net = assetsNow - depositsUsd;
     const apr = (depositsUsd>0 && ageDays!==null && ageDays>0)
       ? net/depositsUsd*365/ageDays*100 : null;
 
@@ -452,9 +752,15 @@ async function loadCapitalStats(detailed){
       const el = document.getElementById(id);
       el.textContent = text; el.className = "pv " + cls;
     };
-    setPBox("pDay", depositsUsd>0 ? money(depositsUsd) : "н/д", "");
+    const el = document.getElementById("pDay");
+    el.className = "pv";
+    el.innerHTML = (depositsUsd>0 ? money(depositsUsd) : "н/д") +
+      `<div class="pv-sub">${depU.total>0?"USDT "+depU.total.toFixed(2):""}` +
+      `${depW.total>0?" · WETH "+depW.total.toFixed(4):""}` +
+      `${nativeDepositUsd>0?" · ETH "+money(nativeDepositUsd):""}</div>`;
     setPBox("pWeek", money(assetsNow), "");
-    setPBox("pMonth", "≈"+money(gasEstUsd)+` (${txCount} тр.)`, "");
+    if(assetsNow > 0) portfolioCapital = assetsNow;   // доля в пуле зависит от размера капитала
+    setPBox("pMonth", (gasInfo.exact?"":"≈")+money(gasEstUsd)+` (${gasInfo.txs} тр.)`, "");
     setPBox("pAll", apr!==null ? (apr>=0?"+":"")+apr.toFixed(1)+"%" : "н/д",
       apr===null ? "dim" : (apr>=0?"good":"bad"));
   }catch(e){
@@ -514,13 +820,16 @@ function widthForTargetApr(targetYearPct, price, poolLiq, feeFrac, volUsdDay, ca
   return (lo+hi)/2;
 }
 
-async function poolVolume(pool, d0, hours=2){
+async function poolVolume(pool, d0, hours=2, isV4=false){
   const head = Number(await rpc("eth_blockNumber",[]));
   const span = Math.floor(hours*3600*RATE), CH=4000;
   const chunks=[]; for(let b=head-span;b<=head;b+=CH) chunks.push([b,Math.min(b+CH-1,head)]);
+  // v4: свопы идут на синглтоне PoolManager, пул различается по topics[1]=poolId
+  const addr   = isV4 ? V4_POOLMANAGER : pool;
+  const topics = isV4 ? [V4_SWAP_TOPIC, pool] : [SWAP_TOPIC];
   const res = await Promise.all(chunks.map(c=>
     rpc("eth_getLogs",[{fromBlock:"0x"+c[0].toString(16),toBlock:"0x"+c[1].toString(16),
-      address:pool,topics:[SWAP_TOPIC]}]).catch(()=>null)));
+      address:addr,topics}]).catch(()=>null)));
   let vol0=0,n=0,missing=0;
   for(const logs of res){ if(!logs){missing++;continue;}
     for(const l of logs){ let a=S(words(l.data)[0]); if(a<0n)a=-a;
@@ -538,13 +847,13 @@ function tileHtml(p){
   return `
     <div class="tile-head">
       <div class="tile-left">
-        <div class="tile-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(2)}%</div>
+        <div class="tile-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(p.fee<100?4:2)}%${p.isV4?" · v4":""}</div>
         <div class="tile-sub"><span class="dot ${state.c}"></span>${state.t} · #${p.id}</div>
       </div>
       <div class="tile-stats">
         <div class="tile-right">
           <div class="tile-value">${money(p.value)}</div>
-          <div class="tile-fees good">+${money(p.feesUsd)}</div>
+          <div class="tile-fees ${p.feesUnknown?"":"good"}">${p.feesUnknown?"комиссии н/д":"+"+money(p.feesUsd)}</div>
         </div>
         <div class="tile-apr" data-apr="${p.id}">
           <div class="k">APR/год</div>
@@ -569,7 +878,9 @@ function tileHtml(p){
         <span class="v">${fmtUsd(activeLiquidityUsd(p.poolLiq,p.price,p.t0.decimals,p.t1.decimals,1.0))} (±0,5%)</span></div>
       <div class="row vol-row"><span class="k">Оборот пула</span>
         <span class="v vol-val">нажмите для расчёта</span></div>
-      <p class="note mono">${p.pool}</p>
+      <div class="row"><span class="k">Протокол</span>
+        <span class="v">${p.isV4?"Uniswap v4":"Uniswap v3"}</span></div>
+      <p class="note mono">${p.isV4?"poolId ":""}${p.pool}</p>
     </div>`;
 }
 
@@ -583,7 +894,7 @@ function bindTile(el, p){
     if(willOpen && volVal && volVal.textContent==="нажмите для расчёта"){
       volVal.textContent = "считаю…";
       try{
-        const v = await poolVolume(p.pool, p.t0.decimals, 2);
+        const v = await poolVolume(p.pool, p.t0.decimals, 2, !!p.isV4);
         volVal.textContent = fmtUsd(v.vol0*p.price)+"/сут"+
           (v.missing?` (частично)`:"");
       }catch(e){ volVal.textContent = "ошибка"; }
@@ -598,15 +909,48 @@ async function load(){
   document.getElementById("refresh").disabled = true;
   const tilesEl = document.getElementById("tiles"); tilesEl.innerHTML="";
   try{
-    const basics = await discoverPositions(OWNER);
-    document.getElementById("loading").textContent = `найдено позиций: ${basics.length}`;
-    const detailed = await Promise.all(basics.map(p=>loadPositionDetails(p, OWNER)));
+    const [basics, v4basics] = await Promise.all([
+      discoverPositions(OWNER), discoverV4Positions(OWNER)]);
+    document.getElementById("loading").textContent =
+      `найдено позиций: v3 ${basics.length}, v4 ${v4basics.length}`;
+    const detailed = (await Promise.all([
+      ...basics.map(p=>loadPositionDetails(p, OWNER).catch(()=>null)),
+      ...v4basics.map(p=>loadV4Details(p, OWNER).catch(()=>null))])).filter(Boolean);
     detailed.sort((a,b)=>b.value-a.value);
 
     if(!detailed.length){
-      tilesEl.innerHTML = `<div class="card"><p class="note">Открытых позиций
-        Uniswap v3 на этом адресе не найдено.</p></div>`;
-      document.getElementById("recCard").style.display = "none";
+      // открытых нет — показываем последнюю закрытую, чтобы экран не был пустым
+      const allClosed = [...(basics.closedPositions||[]), ...(v4basics.closedPositions||[])];
+      if(allClosed.length){
+        allClosed.sort((a,b)=> a.id < b.id ? 1 : a.id > b.id ? -1 : 0);   // BigInt-safe
+        const last = allClosed[0];
+        try{
+          const det = last.isV4 ? await loadV4Details(last, OWNER)
+                                : await loadPositionDetails(last, OWNER);
+          const collected = det.isV4 ? null
+            : await realizedFees(det.id, det.price, det.t0.decimals, det.t1.decimals);
+          tilesEl.innerHTML = `<div class="card">
+            <div class="lbl">Последняя закрытая позиция</div>
+            <div class="rec-row"><div>
+              <div class="rec-pair">${det.t0.symbol}/${det.t1.symbol} · ${(det.fee/1e4).toFixed(det.fee<100?4:2)}%${det.isV4?" · v4":""}</div>
+              <div class="rec-range">#${det.id} · диапазон был
+                $${det.lo.toLocaleString("ru",{maximumFractionDigits:det.lo<10?4:0})}
+                … $${det.hi.toLocaleString("ru",{maximumFractionDigits:det.hi<10?4:0})}</div>
+              <div class="rec-range">${det.t0.symbol} сейчас
+                $${det.price.toLocaleString("ru",{maximumFractionDigits:det.price<10?4:2})}</div>
+            </div><div class="rec-apr ${collected?"good":"dim"}">${
+              collected!==null && collected!==undefined
+                ? "комиссий "+money(collected) : "комиссии н/д"}</div></div>
+            <p class="note">Открытых позиций сейчас нет — ликвидность снята.
+              Показана последняя по номеру токена.</p></div>`;
+        }catch(e){
+          tilesEl.innerHTML = `<div class="card"><p class="note">Открытых позиций нет.
+            Последнюю закрытую прочитать не удалось.</p></div>`;
+        }
+      } else {
+        tilesEl.innerHTML = `<div class="card"><p class="note">Позиций Uniswap
+          на этом адресе не найдено.</p></div>`;
+      }
     } else {
       tilesEl.innerHTML = detailed.map(p=>`<div class="tile">${tileHtml(p)}</div>`).join("");
       [...tilesEl.children].forEach((el,i)=>bindTile(el, detailed[i]));
@@ -618,8 +962,9 @@ async function load(){
     const totalValue = detailed.reduce((s,p)=>s+p.value,0);
     const totalUnclaimed = detailed.reduce((s,p)=>s+p.feesUsd,0);
     const [realized, ages] = await Promise.all([
-      Promise.all(detailed.map(p=>realizedFees(p.id, p.price, p.t0.decimals, p.t1.decimals))),
-      Promise.all(detailed.map(p=>positionAgeDays(p.id)))]);
+      Promise.all(detailed.map(p=>p.isV4 ? 0
+        : realizedFees(p.id, p.price, p.t0.decimals, p.t1.decimals))),
+      Promise.all(detailed.map(p=>p.isV4 ? null : positionAgeDays(p.id)))]);
     const totalRealized = realized.reduce((a,b)=>a+b,0);
     const totalFeesAllTime = totalUnclaimed + totalRealized;
 
@@ -629,6 +974,11 @@ async function load(){
       const el = tile.querySelector(".v"), elm = tile.querySelector(".vm");
       const age = ages[i];
       const feesAll = p.feesUsd + realized[i];
+      if(p.feesUnknown){
+        el.textContent = "н/д"; el.className = "v dim";
+        elm.textContent = "v4"; elm.className = "vm dim";
+        return;
+      }
       if(age===null || age<=0 || p.value<=0){
         el.textContent = "н/д"; el.className = "v dim";
         elm.textContent = ""; elm.className = "vm dim";
@@ -641,32 +991,6 @@ async function load(){
         elm.className = "vm " + (aprM>=0?"good":"bad");
       }
     });
-
-    // ---------- рекомендуемый диапазон: оборот кешируем, ширина пересчитывается по вводу ----------
-    const pools = new Map();
-    for(const p of detailed) if(!pools.has(p.pool)) pools.set(p.pool, p);
-    recData = [];
-    if(pools.size){
-      document.getElementById("recCard").style.display = "block";
-      const recBody = document.getElementById("recBody");
-      const entries = [...pools.values()];
-      recBody.innerHTML = entries.map(p=>`<div class="rec-row" data-rec="${p.pool}">
-        <div><div class="rec-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(2)}%</div>
-        <div class="rec-range">считаю оборот…</div></div>
-        <div class="rec-apr dim">…</div></div>`).join("");
-      await Promise.all(entries.map(async p=>{
-        try{
-          const v = await poolVolume(p.pool, p.t0.decimals, 2);
-          recData.push({p, volUsd: v.vol0*p.price, missing: v.missing});
-        }catch(e){
-          const row = recBody.querySelector(`[data-rec="${p.pool}"]`);
-          row.querySelector(".rec-range").textContent = "не удалось посчитать оборот";
-        }
-      }));
-      renderRecRows(parseRecTarget());
-    } else {
-      document.getElementById("recCard").style.display = "none";
-    }
 
     document.getElementById("summary").style.display="block";
     document.getElementById("sumValue").textContent = money(totalValue);
