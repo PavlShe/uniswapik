@@ -56,6 +56,12 @@ td:first-child,th:first-child{text-align:left}
 .pbox .pk{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 .pbox .pv{font-size:14px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums}
 .pbox .pv.dim{color:var(--dim);font-weight:500;font-size:12px}
+.keyrow{display:flex;gap:6px;margin:8px 0 2px}
+.keyrow input{flex:1;min-width:0;background:var(--card2,#1a1a1a);border:1px solid var(--bd,#333);
+  border-radius:8px;padding:7px 9px;color:var(--fg,#eee);font-size:11px}
+.keyrow button{background:var(--acc,#2b6);border:0;border-radius:8px;color:#fff;
+  padding:7px 12px;font-size:11px;font-weight:600}
+.warn-i{color:var(--bad,#e66)}
 .pv-sub{font-size:9.5px;color:var(--dim);font-weight:500;margin-top:2px;line-height:1.25}
 
 /* --- плитки позиций --- */
@@ -147,10 +153,17 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="pbox"><div class="pk">Газ (оценка)</div><div class="pv" id="pMonth">—</div></div>
       <div class="pbox"><div class="pk">APR</div><div class="pv" id="pAll">—</div></div>
     </div>
-    <p class="note"><b>Депозиты</b> — входящие переводы WETH/USD₮0 (с бирж и
-      других адресов, без возвратов из менеджера позиций) плюс полученный
-      нативный ETH. У ETH нет события Transfer, поэтому он восстановлен по
-      тождеству «осталось на балансе + израсходовано на газ».
+    <div class="keyrow">
+      <input id="arbiIn" placeholder="ключ Arbiscan (бесплатный) — для учёта ETH и точного газа">
+      <button id="arbiSave">ок</button>
+    </div>
+    <p class="note"><b>Депозиты</b> — входящие переводы WETH/USD₮0 (с бирж и других
+      адресов, без возвратов из менеджеров позиций v3/v4) плюс нативный ETH,
+      каждое пополнение — <b>по курсу на момент прихода</b>. Нативный ETH не
+      порождает событий в блокчейне, а возвраты из v4 идут внутренними
+      транзакциями, поэтому без индексатора он не виден: вставьте бесплатный ключ
+      с etherscan.io — он хранится только в вашем браузере. С ключом газ тоже
+      считается точно по всем транзакциям, а не только по затронувшим позиции.
       <b>Активы сейчас</b> — кошелёк плюс стоимость открытых позиций (v3 и v4).
       <b>Газ</b> — точная сумма по чекам транзакций, затронувших ваши позиции;
       если часть чеков прочитать не удалось, показывается со знаком ≈.
@@ -211,6 +224,12 @@ const AVG_TX_GAS_USD = 0.18;   // средняя стоимость операц
 const V4PM = "0xd88F38F930b7952f2DB2432Cb002E7abbF3dD869";
 const STATEVIEW = "0x76fd297e2d437cd7f76d50f01afe6160f86e9990";
 const V4_POOLMANAGER = "0x360e68faccca8ca495c1b759fd9eee466db9fb32";
+// всё, что приходит от этих контрактов, — возврат собственных средств, а не пополнение
+const PROTOCOL_ADDRS = new Set([
+  "0xc36442b4a4522e871399cd717abdd847ab11fe88",   // NonfungiblePositionManager v3
+  "0xd88f38f930b7952f2db2432cb002e7abbf3dd869",   // PositionManager v4
+  "0x360e68faccca8ca495c1b759fd9eee466db9fb32",   // PoolManager v4
+]);
 const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 const SEL4 = {ppi:"0x7ba03aad", posLiq:"0x1efeed33", ownerOf:"0x6352211e",
               slot0:"0xc815641c", liq:"0xfa6793d5"};
@@ -522,6 +541,12 @@ document.getElementById("changeAddr").onclick = () => {
   document.getElementById("addrIn").value = OWNER || "";
   showSetup(true);
 };
+{const ai=document.getElementById("arbiIn"), ab=document.getElementById("arbiSave");
+ if(ai){ ai.value = arbiKey();
+   ab.onclick = () => { const v=ai.value.trim();
+     if(v) localStorage.setItem("arbikey", v); else localStorage.removeItem("arbikey");
+     ab.textContent="✓"; setTimeout(()=>ab.textContent="ок",1200); load(); };
+   ai.addEventListener("keydown", e=>{ if(e.key==="Enter") ab.click(); }); }}
 document.getElementById("refresh").onclick = load;
 
 // ---------- обнаружение позиций ----------
@@ -634,15 +659,18 @@ async function scanIncomingTransfers(tokenAddr, decimals, owner){
     const logs = await rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
       address: tokenAddr, topics:[TRANSFER_TOPIC, null, "0x"+pad(owner)]}]);
     let total = 0, earliestBlock = null;
+    const items = [];
     for(const l of logs){
       const sender = "0x"+l.topics[1].slice(26);
-      if(sender.toLowerCase() === NPM.toLowerCase()) continue;   // возврат из пула — не депозит
-      total += Number(U(words(l.data)[0])) / Math.pow(10, decimals);
+      if(PROTOCOL_ADDRS.has(sender.toLowerCase())) continue;   // возврат из пула — не депозит
+      const amt = Number(U(words(l.data)[0])) / Math.pow(10, decimals);
       const bn = Number(l.blockNumber);
+      total += amt;
+      items.push({amount: amt, block: bn});
       if(earliestBlock===null || bn<earliestBlock) earliestBlock = bn;
     }
-    return {total, earliestBlock};
-  }catch(e){ return {total: 0, earliestBlock: null, error: true}; }
+    return {total, earliestBlock, items};
+  }catch(e){ return {total: 0, earliestBlock: null, items: [], error: true}; }
 }
 
 async function exactLpGasUsd(priceEth){
@@ -702,6 +730,49 @@ async function exactLpGasUsd(priceEth){
   return {usd: total, txs: txsAll, measuredTxs: got, exact};
 }
 
+const priceCache = new Map();
+async function priceAtBlock(block){
+  // архива состояний у публичного RPC нет, но цену можно взять из ближайшего
+  // Swap-события пула: sqrtPriceX96 лежит в данных события
+  if(priceCache.has(block)) return priceCache.get(block);
+  const p = (async()=>{
+    for(const win of [600, 5000, 40000]){
+      try{
+        const logs = await rpc("eth_getLogs",[{
+          fromBlock:"0x"+Math.max(0,block-win).toString(16),
+          toBlock:"0x"+(block+win).toString(16),
+          address: WETH_USDT_POOL, topics:[SWAP_TOPIC]}]);
+        if(!logs.length) continue;
+        let best=null, bd=null;
+        for(const l of logs){
+          const d = Math.abs(Number(l.blockNumber)-block);
+          if(bd===null || d<bd){ bd=d; best=l; }
+        }
+        const sq = Number(U(words(best.data)[2]))/2**96;
+        return sq*sq*1e12;
+      }catch(e){}
+    }
+    return null;
+  })();
+  priceCache.set(block, p);
+  return p;
+}
+
+function arbiKey(){ return localStorage.getItem("arbikey") || ""; }
+
+async function arbiscanTxList(owner){
+  // нативные переводы ETH не порождают событий, а внутренние возвраты из v4
+  // не видны вообще — восстановить их из RPC нельзя, нужен индексатор
+  const k = arbiKey();
+  if(!k) return null;
+  const url = "https://api.etherscan.io/v2/api?chainid=42161&module=account"+
+    "&action=txlist&address="+owner+"&startblock=0&endblock=99999999&sort=asc&apikey="+k;
+  const r = await fetch(url);
+  const j = await r.json();
+  if(j.status !== "1" || !Array.isArray(j.result)) return {error: j.message || "отказ API"};
+  return {txs: j.result};
+}
+
 async function loadCapitalStats(detailed){
   try{
     const [s0, wethBal, usdtBal, nativeBal, nonce, depW, depU] = await Promise.all([
@@ -728,13 +799,44 @@ async function loadCapitalStats(detailed){
     let gasInfo;
     try{ gasInfo = await exactLpGasUsd(price); }
     catch(e){ gasInfo = {usd: txCount*AVG_TX_GAS_USD, txs: txCount, exact:false}; }
-    const gasEstUsd = gasInfo.usd;
-    // нативный ETH приходит без события Transfer — восстанавливаем по тождеству:
-    // получено = осталось на балансе + израсходовано на газ
-    const nativeDepositUsd = nativeEth*price + gasEstUsd;
-    const depositsUsd = depW.total*price + depU.total + nativeDepositUsd;
+    let gasEstUsd = gasInfo.usd;
+    let gasExact = gasInfo.exact, gasTxs = gasInfo.txs;
+
+    // нативный ETH: только из индексатора; из RPC он принципиально не виден
+    let scan = null;
+    try{ scan = await arbiscanTxList(OWNER); }catch(e){ scan = {error:"сеть"}; }
+    let nativeEthIn = null, nativeDepositUsd = 0, nativeBlocks = [];
+    if(scan && scan.txs){
+      let gasWei = 0n, tot = 0;
+      for(const t of scan.txs){
+        if(t.from && t.from.toLowerCase()===OWNER.toLowerCase())
+          gasWei += BigInt(t.gasUsed)*BigInt(t.gasPrice);
+        if(t.to && t.to.toLowerCase()===OWNER.toLowerCase() &&
+           t.value!=="0" && t.isError==="0"){
+          const eth = Number(BigInt(t.value))/1e18;
+          tot += eth; nativeBlocks.push({eth, block: Number(t.blockNumber)});
+        }
+      }
+      nativeEthIn = tot;
+      gasEstUsd = Number(gasWei)/1e18*price; gasExact = true;
+      gasTxs = scan.txs.filter(t=>t.from && t.from.toLowerCase()===OWNER.toLowerCase()).length;
+      // каждое пополнение оценивается по курсу НА МОМЕНТ ПРИХОДА
+      const px = await Promise.all(nativeBlocks.map(b=>priceAtBlock(b.block)));
+      nativeBlocks.forEach((b,i)=>{ b.price = px[i] || price;
+                                    nativeDepositUsd += b.eth*b.price; });
+    }
+
+    // WETH-пополнения тоже по курсу на момент прихода
+    let wethDepUsd = 0;
+    if(depW.items && depW.items.length){
+      const px = await Promise.all(depW.items.map(it=>priceAtBlock(it.block)));
+      depW.items.forEach((it,i)=>{ wethDepUsd += it.amount*(px[i]||price); });
+    }
+    const depositsUsd = wethDepUsd + depU.total + nativeDepositUsd;
 
     let earliestBlock = null;
+    for(const b of nativeBlocks) if(earliestBlock===null || b.block<earliestBlock)
+      earliestBlock = b.block;
     for(const d of [depW, depU]) if(d.earliestBlock!==null &&
         (earliestBlock===null || d.earliestBlock<earliestBlock)) earliestBlock = d.earliestBlock;
 
@@ -754,13 +856,16 @@ async function loadCapitalStats(detailed){
     };
     const el = document.getElementById("pDay");
     el.className = "pv";
+    const ethSub = nativeEthIn===null
+      ? `<span class="warn-i">ETH не учтён — нужен ключ Arbiscan</span>`
+      : (nativeEthIn>0 ? " · ETH "+nativeEthIn.toFixed(6)+" ("+money(nativeDepositUsd)+
+          (nativeBlocks[0]&&nativeBlocks[0].price?" по "+money(nativeBlocks[0].price):"")+")" : "");
     el.innerHTML = (depositsUsd>0 ? money(depositsUsd) : "н/д") +
       `<div class="pv-sub">${depU.total>0?"USDT "+depU.total.toFixed(2):""}` +
-      `${depW.total>0?" · WETH "+depW.total.toFixed(4):""}` +
-      `${nativeDepositUsd>0?" · ETH "+money(nativeDepositUsd):""}</div>`;
+      `${depW.total>0?" · WETH "+depW.total.toFixed(4):""}${ethSub}</div>`;
     setPBox("pWeek", money(assetsNow), "");
     if(assetsNow > 0) portfolioCapital = assetsNow;   // доля в пуле зависит от размера капитала
-    setPBox("pMonth", (gasInfo.exact?"":"≈")+money(gasEstUsd)+` (${gasInfo.txs} тр.)`, "");
+    setPBox("pMonth", (gasExact?"":"≈")+money(gasEstUsd)+` (${gasTxs} тр.)`, "");
     setPBox("pAll", apr!==null ? (apr>=0?"+":"")+apr.toFixed(1)+"%" : "н/д",
       apr===null ? "dim" : (apr>=0?"good":"bad"));
   }catch(e){
