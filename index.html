@@ -68,6 +68,7 @@ td:first-child,th:first-child{text-align:left}
 .tile-pair{font-weight:650;font-size:14.5px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
 .tile-sub{font-size:12px;color:var(--dim)}
+.il{font-weight:600}
 .tile-price{font-size:13px;color:var(--dim);margin:-4px 14px 8px;
   font-variant-numeric:tabular-nums}
 .tile-price b{color:var(--ink);font-weight:650}
@@ -205,6 +206,7 @@ const RATE = 3.9947;
 const SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 const COLLECT_TOPIC = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01";
 const INCREASE_TOPIC = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f";
+const DECREASE_TOPIC = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 // проект работает с этой парой независимо от того, открыта ли сейчас позиция —
 // нужны фиксированные адреса, чтобы депозиты/баланс считались и без открытой LP
@@ -628,7 +630,29 @@ async function loadV4Details(p, owner){
   // несобранные комиссии в v4 требуют математики feeGrowthInside — честно помечаем как неизвестные
   return {...p, t0, t1, price, tick, poolLiq, e, u, value,
     feeE:0, feeU:0, feesUsd:0, feesUnknown:true, inRange,
+    dep:null, hodl:null, il:null, ilPct:null,
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
+}
+
+// Импермент лосс = сколько позиция стоит сейчас против того, сколько стоили бы
+// ВНЕСЁННЫЕ токены, если бы их просто держали. Исторические цены не нужны:
+// внесённые количества известны точно, а оцениваются они по текущей цене.
+async function depositedAmounts(tokenId, d0, d1){
+  const [inc, dec] = await Promise.all([
+    rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest", address:NPM,
+      topics:[INCREASE_TOPIC, "0x"+padN(tokenId)]}]).catch(()=>[]),
+    rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest", address:NPM,
+      topics:[DECREASE_TOPIC, "0x"+padN(tokenId)]}]).catch(()=>[]),
+  ]);
+  if(!inc.length) return null;
+  let a0 = 0, a1 = 0;
+  // в данных обоих событий: [ликвидность, amount0, amount1]
+  for(const l of inc){ const w = words(l.data);
+    a0 += Number(U(w[1]))/Math.pow(10,d0); a1 += Number(U(w[2]))/Math.pow(10,d1); }
+  // частичный вывод уменьшает базу сравнения — иначе потери будут завышены
+  for(const l of dec){ const w = words(l.data);
+    a0 -= Number(U(w[1]))/Math.pow(10,d0); a1 -= Number(U(w[2]))/Math.pow(10,d1); }
+  return {a0, a1};
 }
 
 async function loadPositionDetails(p, owner){
@@ -654,8 +678,17 @@ async function loadPositionDetails(p, owner){
     feesUsd = feeE*price + feeU;
   }catch(_){}
   const inRange = tick>=p.tl && tick<=p.tu;
+  let dep = null, hodl = null, il = null, ilPct = null;
+  try{
+    dep = await depositedAmounts(p.id, t0.decimals, t1.decimals);
+    if(dep){
+      hodl = dep.a0*price + dep.a1;
+      // комиссии в сравнение не входят: это отдельный доход, а не изменение тела
+      if(hodl > 0){ il = value - hodl; ilPct = il/hodl*100; }
+    }
+  }catch(_){}
   return {...p, pool, t0, t1, price, tick, poolLiq, e, u, value,
-    feeE, feeU, feesUsd, inRange,
+    feeE, feeU, feesUsd, inRange, dep, hodl, il, ilPct,
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
@@ -972,7 +1005,10 @@ function tileHtml(p){
       </div>
       <div class="chev">▾</div>
     </div>
-    <div class="tile-price">${tilePriceLabel(p)}</div>
+    <div class="tile-price">${tilePriceLabel(p)}${p.il===null?"":
+      ` · <span class="il ${p.il>=0?"good":"bad"}">IL ${p.il>=0?"+":"−"}$${
+        Math.abs(p.il).toFixed(2)} (${p.ilPct>=0?"+":"−"}${
+        Math.abs(p.ilPct).toFixed(2)}%)</span>`}</div>
     <div class="tile-bar"><div class="now" style="left:${pos}%"></div></div>
     <div class="tile-detail">
       <div class="row"><span class="k">Диапазон</span>
@@ -983,6 +1019,13 @@ function tileHtml(p){
         <span class="v">${p.e.toFixed(5)} ${p.t0.symbol} + ${p.u.toFixed(2)} ${p.t1.symbol}</span></div>
       <div class="row"><span class="k">Комиссии в токенах</span>
         <span class="v">${p.feeE.toFixed(6)} ${p.t0.symbol} + ${p.feeU.toFixed(2)} ${p.t1.symbol}</span></div>
+      ${p.dep?`<div class="row"><span class="k">Внесено</span>
+        <span class="v">${p.dep.a0.toFixed(5)} ${p.t0.symbol} + ${p.dep.a1.toFixed(2)} ${p.t1.symbol}</span></div>
+      <div class="row"><span class="k">Если бы просто держали</span>
+        <span class="v">${money(p.hodl)}</span></div>
+      <div class="row"><span class="k">Импермент лосс</span>
+        <span class="v ${p.il>=0?"good":"bad"}">${p.il>=0?"+":"−"}${money(Math.abs(p.il))} (${
+          p.ilPct>=0?"+":"−"}${Math.abs(p.ilPct).toFixed(2)}%)</span></div>`:""}
       <div class="row"><span class="k">Активная ликвидность пула</span>
         <span class="v">${fmtUsd(activeLiquidityUsd(p.poolLiq,p.price,p.t0.decimals,p.t1.decimals,1.0))} (±0,5%)</span></div>
       <div class="row vol-row"><span class="k">Оборот пула</span>
