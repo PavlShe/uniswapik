@@ -72,7 +72,18 @@ td:first-child,th:first-child{text-align:left}
   font-variant-numeric:tabular-nums}
 .tile-price b{color:var(--ink);font-weight:650}
 .tile-stats{display:flex;align-items:center;gap:14px;flex-shrink:0}
-@media (max-width:400px){ .tile-stats{gap:9px} }
+/* на узком экране три столбца рядом с названием пары обрезают название,
+   поэтому статистика переносится под него отдельной строкой */
+@media (max-width:520px){
+  .tile-head{flex-wrap:wrap}
+  .tile-left{flex:1 1 auto}
+  .tile-stats{order:3;width:100%;justify-content:space-between;gap:8px;
+    margin-top:2px;padding-top:8px;border-top:1px solid var(--bd,#e6e6e6)}
+  .tile-col,.tile-apr{text-align:left}
+  .tile-apr{min-width:0}
+  .tile-stats>*:last-child{text-align:right}
+  .tile-sub{white-space:normal}
+}
 .tile-col{text-align:center;flex-shrink:0}
 .tile-apr{text-align:center;flex-shrink:0;min-width:52px}
 .tile-stats .k{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
