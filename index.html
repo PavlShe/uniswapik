@@ -480,8 +480,8 @@ async function load(){
       if(!el) return;
       const age = ages[i];
       const feesAll = p.feesUsd + realized[i];
-      if(age===null || age<0.5 || p.value<=0){
-        el.textContent = age!==null && age<0.5 ? "новая" : "н/д";
+      if(age===null || age<=0 || p.value<=0){
+        el.textContent = "н/д";
         el.className = "v dim";
       } else {
         const apr = feesAll/p.value*365/age*100;
