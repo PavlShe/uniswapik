@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Позиция Uniswap v3</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:#ffffff; --card:#f4f6f8; --ink:#101519; --dim:#6b7a88; --line:#dde3e9;
+  --accent:#2f6feb; --good:#1f8a5f; --warn:#a8761c; --bad:#c0392b;
+}
+body.tg-dark{
+  --bg:#17212b; --card:#1d2b39; --ink:#e9eef3; --dim:#8fa3b5; --line:#2a3b4d;
+  --accent:#5b9bff; --good:#57c08a; --warn:#d7a34d; --bad:#e2705f;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:12px 12px 32px;background:var(--bg);color:var(--ink);
+  font:15px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.wrap{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+h1{font-size:17px;margin:0 0 2px;font-weight:650}
+.sub{color:var(--dim);font-size:13px}
+.price{font-size:30px;font-weight:700;letter-spacing:-.5px;
+  font-variant-numeric:tabular-nums;margin:6px 0 0}
+.row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;
+  border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.row:last-child{border-bottom:none}
+.row .k{color:var(--dim)}
+.row .v{font-weight:600;text-align:right}
+.lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
+  margin:0 0 8px;font-weight:650}
+.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.bar{position:relative;height:44px;margin:12px 0 6px}
+.bar .track{position:absolute;left:0;right:0;top:18px;height:8px;background:var(--line);
+  border-radius:4px}
+.bar .rng{position:absolute;top:18px;height:8px;background:var(--accent);opacity:.35;
+  border-radius:4px}
+.bar .now{position:absolute;top:10px;width:3px;height:24px;background:var(--ink);
+  border-radius:2px}
+.bar .lo,.bar .hi{position:absolute;top:32px;font-size:11px;color:var(--dim);
+  font-variant-numeric:tabular-nums}
+.bar .lo{left:0}.bar .hi{right:0}
+button{width:100%;padding:12px;border:none;border-radius:12px;background:var(--accent);
+  color:#fff;font-size:15px;font-weight:600;font-family:inherit}
+button:disabled{opacity:.5}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+td,th{padding:5px 4px;text-align:right;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
+td:first-child,th:first-child{text-align:left}
+tr.me td{background:rgba(47,111,235,.12);font-weight:650}
+.note{color:var(--dim);font-size:12px;line-height:1.4}
+.err{color:var(--bad);font-size:13px}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line);
+  border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite;
+  vertical-align:-2px}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1 id="pair">WETH / USD₮0 · 0.05%</h1>
+    <div class="sub" id="addr">—</div>
+    <div class="price" id="price">—</div>
+    <div class="sub" id="pxsub">загрузка <span class="spin"></span></div>
+  </div>
+
+  <div class="card" id="poolCard">
+    <div class="lbl">Пул</div>
+    <div class="row"><span class="k">Размер (TVL)</span><span class="v" id="tvl">—</span></div>
+    <div class="row"><span class="k">Активная ликвидность</span><span class="v" id="act">—</span></div>
+    <div class="row"><span class="k">Оборот</span><span class="v" id="vol">—</span></div>
+  </div>
+
+  <div class="card" id="posCard">
+    <div class="lbl">Позиция</div>
+    <div id="posBody" class="note">ищу позиции…</div>
+  </div>
+
+  <div class="card" id="aprCard">
+    <div class="lbl">Валовые комиссии по ширине</div>
+    <div id="aprBody" class="note">—</div>
+    <p class="note" id="aprNote"></p>
+  </div>
+
+  <button id="refresh">Обновить</button>
+  <p class="note" id="foot"></p>
+</div>
+
+<script>
+const CFG = {
+  pool:  "0x641c00a822e8b671738d32a431a4fb6074e5c79d",
+  npm:   "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+  token0:"0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+  token1:"0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+  d0:18, d1:6, fee:500,
+  owner: new URLSearchParams(location.search).get("a")
+         || localStorage.getItem("owner")
+         || "0x341CD76975786282452C2ddA1485FFf9BA0fA580",
+  rpcs:["https://arb1.arbitrum.io/rpc",
+        "https://arbitrum-one.publicnode.com"],
+};
+localStorage.setItem("owner", CFG.owner);
+
+const SEL={slot0:"0x3850c7bd",liq:"0x1a686502",bal:"0x70a08231",
+  tokenOf:"0x2f745c59",positions:"0x99fbab88",collect:"0xfc6f7865"};
+const SWAP_TOPIC="0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+
+const tg = window.Telegram?.WebApp;
+if (tg){ tg.ready(); tg.expand();
+  if (tg.colorScheme === "dark") document.body.classList.add("tg-dark"); }
+else if (matchMedia("(prefers-color-scheme:dark)").matches)
+  document.body.classList.add("tg-dark");
+
+let rpcIdx = 0;
+async function rpc(method, params){
+  for (let n=0;n<CFG.rpcs.length;n++){
+    const url = CFG.rpcs[(rpcIdx+n)%CFG.rpcs.length];
+    try{
+      const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({jsonrpc:"2.0",id:1,method,params})});
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message||"rpc error");
+      rpcIdx = (rpcIdx+n)%CFG.rpcs.length;
+      return j.result;
+    }catch(e){ if (n===CFG.rpcs.length-1) throw e; }
+  }
+}
+const call = (to,data)=>rpc("eth_call",[{to,data},"latest"]);
+const pad = a => a.toLowerCase().replace("0x","").padStart(64,"0");
+const padN = n => BigInt(n).toString(16).padStart(64,"0");
+const words = h => { h=h.replace(/^0x/,""); const o=[];
+  for(let i=0;i<h.length;i+=64) o.push(h.slice(i,i+64)); return o; };
+const U = w => BigInt("0x"+w);
+const S = w => { const v=U(w), M=1n<<255n; return v>=M ? v-(1n<<256n) : v; };
+
+const fmtUsd = x => { const a=Math.abs(x);
+  if(a>=1e9) return "$"+(x/1e9).toFixed(2)+" млрд";
+  if(a>=1e6) return "$"+(x/1e6).toFixed(2)+" млн";
+  if(a>=1e3) return "$"+(x/1e3).toFixed(1)+" тыс";
+  return "$"+x.toFixed(2); };
+const money = x => "$"+x.toLocaleString("ru",{minimumFractionDigits:2,maximumFractionDigits:2});
+const t2p = t => Math.pow(1.0001,t)*Math.pow(10,CFG.d0-CFG.d1);
+
+function liqForCapital(cap,P,w){
+  const k=Math.pow(10,CFG.d1-CFG.d0), pr=P*k;
+  const pl=pr*(1-w/200), pu=pr*(1+w/200);
+  const den=2*Math.sqrt(pr)-pr/Math.sqrt(pu)-Math.sqrt(pl);
+  return den>0 ? cap*Math.pow(10,CFG.d1)/den : 0;
+}
+function amounts(L,P,tl,tu){
+  const k=Math.pow(10,CFG.d1-CFG.d0);
+  const sp=Math.sqrt(P*k), spl=Math.sqrt(Math.pow(1.0001,tl)), spu=Math.sqrt(Math.pow(1.0001,tu));
+  if(sp<=spl) return [L*(1/spl-1/spu)/Math.pow(10,CFG.d0),0];
+  if(sp>=spu) return [0,L*(spu-spl)/Math.pow(10,CFG.d1)];
+  return [L*(1/sp-1/spu)/Math.pow(10,CFG.d0), L*(sp-spl)/Math.pow(10,CFG.d1)];
+}
+
+async function volumeEstimate(hours){
+  const head = Number(await rpc("eth_blockNumber",[]));
+  const RATE = 3.9947, span = Math.floor(hours*3600*RATE), CH = 4000;
+  let vol0=0, n=0, chunks=[];
+  for(let b=head-span;b<=head;b+=CH) chunks.push([b,Math.min(b+CH-1,head)]);
+  const res = await Promise.all(chunks.map(c=>
+    rpc("eth_getLogs",[{fromBlock:"0x"+c[0].toString(16),toBlock:"0x"+c[1].toString(16),
+      address:CFG.pool,topics:[SWAP_TOPIC]}]).catch(()=>null)));
+  let missing=0;
+  for(const logs of res){
+    if(!logs){missing++;continue;}
+    for(const l of logs){
+      const w=words(l.data);
+      let a=S(w[0]); if(a<0n) a=-a;
+      vol0 += Number(a)/Math.pow(10,CFG.d0); n++;
+    }
+  }
+  return {vol0: vol0*24/hours, nswaps:n, missing, chunks:chunks.length};
+}
+
+async function load(){
+  document.getElementById("addr").textContent =
+    CFG.owner.slice(0,10)+"…"+CFG.owner.slice(-6);
+  document.getElementById("refresh").disabled = true;
+  try{
+    const [s0,lq,b0,b1] = await Promise.all([
+      call(CFG.pool,SEL.slot0), call(CFG.pool,SEL.liq),
+      call(CFG.token0,SEL.bal+pad(CFG.pool)), call(CFG.token1,SEL.bal+pad(CFG.pool))]);
+    const w0=words(s0);
+    const sq=Number(U(w0[0]))/2**96;
+    const P=sq*sq*Math.pow(10,CFG.d0-CFG.d1);
+    const tick=Number(S(w0[1]));
+    const Lpool=Number(U(words(lq)[0]));
+    const tvl=Number(U(words(b0)[0]))/Math.pow(10,CFG.d0)*P
+            + Number(U(words(b1)[0]))/Math.pow(10,CFG.d1);
+
+    document.getElementById("price").textContent =
+      "$"+P.toLocaleString("ru",{maximumFractionDigits:2});
+    document.getElementById("pxsub").textContent = "тик "+tick;
+    document.getElementById("tvl").textContent = fmtUsd(tvl);
+    const actUsd = Lpool * (()=>{ const k=Math.pow(10,CFG.d1-CFG.d0),pr=P*k;
+      const pl=pr*0.995,pu=pr*1.005;
+      return (2*Math.sqrt(pr)-pr/Math.sqrt(pu)-Math.sqrt(pl))/Math.pow(10,CFG.d1);})();
+    document.getElementById("act").textContent = fmtUsd(actUsd)+" (±0,5%)";
+
+    // --- позиции ---
+    const bal = Number(U(words(await call(CFG.npm,SEL.bal+pad(CFG.owner)))[0]));
+    let mine=[];
+    for(let i=0;i<bal;i++){
+      const id=U(words(await call(CFG.npm,SEL.tokenOf+pad(CFG.owner)+padN(i)))[0]);
+      const raw=await call(CFG.npm,SEL.positions+padN(id));
+      const w=words(raw);
+      const t0="0x"+w[2].slice(24), t1="0x"+w[3].slice(24), fee=Number(U(w[4]));
+      if(t0!==CFG.token0||t1!==CFG.token1||fee!==CFG.fee) continue;
+      const L=Number(U(w[7])); if(L===0) continue;
+      mine.push({id,tl:Number(S(w[5])),tu:Number(S(w[6])),L});
+    }
+    const pb=document.getElementById("posBody");
+    if(!mine.length){ pb.innerHTML='<div class="note">Активных позиций в этом пуле нет.</div>'; }
+    else{
+      const p=mine[0], lo=t2p(p.tl), hi=t2p(p.tu);
+      const inR = tick>=p.tl && tick<=p.tu;
+      const [e,u]=amounts(p.L,P,p.tl,p.tu), val=e*P+u;
+      let fees=0, fe=0, fu=0;
+      try{
+        const r=await rpc("eth_call",[{from:CFG.owner,to:CFG.npm,
+          data:SEL.collect+padN(p.id)+pad(CFG.owner)+
+               "f".repeat(32).padStart(64,"0")+"f".repeat(32).padStart(64,"0")},"latest"]);
+        const fw=words(r);
+        fe=Number(U(fw[0]))/Math.pow(10,CFG.d0);
+        fu=Number(U(fw[1]))/Math.pow(10,CFG.d1);
+        fees=fe*P+fu;
+      }catch(_){}
+      const share = inR && Lpool>0 ? 100*p.L/Lpool : 0;
+      const width = (Math.pow(1.0001,p.tu-p.tl)-1)*100;
+      const pos = Math.max(0,Math.min(1,(P-lo)/(hi-lo)));
+      const state = inR ? '<span class="good">в диапазоне</span>'
+        : (tick>p.tu ? '<span class="warn">выше — всё в USDT</span>'
+                     : '<span class="bad">ниже — всё в ETH</span>');
+      pb.innerHTML=`
+        <div class="bar">
+          <div class="track"></div>
+          <div class="rng" style="left:0;right:0"></div>
+          <div class="now" style="left:${(pos*100).toFixed(1)}%"></div>
+          <div class="lo">$${lo.toLocaleString("ru",{maximumFractionDigits:0})}</div>
+          <div class="hi">$${hi.toLocaleString("ru",{maximumFractionDigits:0})}</div>
+        </div>
+        <div class="row"><span class="k">Состояние</span><span class="v">${state}</span></div>
+        <div class="row"><span class="k">Токен</span><span class="v mono">#${p.id}</span></div>
+        <div class="row"><span class="k">Ширина</span><span class="v">${width.toFixed(1)}%</span></div>
+        <div class="row"><span class="k">Стоимость</span><span class="v">${money(val)}</span></div>
+        <div class="row"><span class="k">Состав</span><span class="v">${e.toFixed(5)} ETH + ${u.toFixed(2)} USDT</span></div>
+        <div class="row"><span class="k">Комиссии</span><span class="v good">+${money(fees)}</span></div>
+        <div class="row"><span class="k">в токенах</span><span class="v">${fe.toFixed(6)} ETH + ${fu.toFixed(2)} USDT</span></div>
+        <div class="row"><span class="k">Доля комиссий пула</span><span class="v">${share.toFixed(3)}%</span></div>`;
+      window.__mine=mine; window.__P=P; window.__Lpool=Lpool; window.__val=val;
+    }
+
+    // --- оборот и валовые комиссии по ширине ---
+    document.getElementById("vol").innerHTML='считаю <span class="spin"></span>';
+    const v = await volumeEstimate(2);
+    const volUsd = v.vol0*P;
+    document.getElementById("vol").textContent = fmtUsd(volUsd)+"/сут";
+    const cap = window.__val || 500;
+    const rows=[2,3,5,8,10,14,20,30,50].map(w=>{
+      const lo=liqForCapital(cap,P,w);
+      const gross=CFG.fee/1e6*volUsd*(lo/(Lpool+lo))*365/cap*100;
+      return {w,gross};
+    });
+    const myW = window.__mine?.length
+      ? (Math.pow(1.0001,window.__mine[0].tu-window.__mine[0].tl)-1)*100 : null;
+    document.getElementById("aprBody").innerHTML =
+      `<table><tr><th>Ширина</th><th>% в год</th><th>% в мес</th></tr>`+
+      rows.map(r=>{
+        const me = myW && Math.abs(r.w-myW)<1.2;
+        return `<tr class="${me?'me':''}"><td>${r.w}%</td>`+
+               `<td>${r.gross.toFixed(0)}%</td>`+
+               `<td>${(r.gross/12).toFixed(1)}%</td></tr>`;
+      }).join("")+`</table>`;
+    document.getElementById("aprNote").textContent =
+      `Оборот оценён по ${v.nswaps.toLocaleString("ru")} свопам за 2 часа`+
+      (v.missing?` (не получено ${v.missing} из ${v.chunks} блоков-групп)`:"")+
+      `. Это ВАЛОВЫЕ комиссии до потерь на конверсии и газа — чистый результат `+
+      `считает бот командой /apr.`;
+    document.getElementById("foot").textContent =
+      "Обновлено "+new Date().toLocaleTimeString("ru")+" · RPC: "+
+      new URL(CFG.rpcs[rpcIdx]).host;
+  }catch(e){
+    document.getElementById("foot").innerHTML =
+      '<span class="err">Ошибка: '+String(e.message||e)+'</span>';
+  }finally{
+    document.getElementById("refresh").disabled = false;
+  }
+}
+document.getElementById("refresh").onclick = load;
+load();
+</script>
+</body>
+</html>
