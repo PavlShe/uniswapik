@@ -636,29 +636,31 @@ async function loadV4Details(p, owner){
   // несобранные комиссии в v4 требуют математики feeGrowthInside — честно помечаем как неизвестные
   return {...p, t0, t1, price, tick, poolLiq, e, u, value,
     feeE:0, feeU:0, feesUsd:0, feesUnknown:true, inRange,
-    dep:null, hodl:null, il:null, ilPct:null,
+    dep:null, hodl:null, il:null, ilPct:null, earned:null,
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
 // Импермент лосс = сколько позиция стоит сейчас против того, сколько стоили бы
 // ВНЕСЁННЫЕ токены, если бы их просто держали. Исторические цены не нужны:
 // внесённые количества известны точно, а оцениваются они по текущей цене.
-async function depositedAmounts(tokenId, d0, d1){
-  const [inc, dec] = await Promise.all([
-    rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest", address:NPM,
-      topics:[INCREASE_TOPIC, "0x"+padN(tokenId)]}]).catch(()=>[]),
-    rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest", address:NPM,
-      topics:[DECREASE_TOPIC, "0x"+padN(tokenId)]}]).catch(()=>[]),
-  ]);
+async function positionFlows(tokenId, d0, d1){
+  const get = topic => rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
+    address:NPM, topics:[topic, "0x"+padN(tokenId)]}]).catch(()=>[]);
+  const [inc, dec, col] = await Promise.all(
+    [INCREASE_TOPIC, DECREASE_TOPIC, COLLECT_TOPIC].map(get));
   if(!inc.length) return null;
-  let a0 = 0, a1 = 0;
-  // в данных обоих событий: [ликвидность, amount0, amount1]
-  for(const l of inc){ const w = words(l.data);
-    a0 += Number(U(w[1]))/Math.pow(10,d0); a1 += Number(U(w[2]))/Math.pow(10,d1); }
-  // частичный вывод уменьшает базу сравнения — иначе потери будут завышены
-  for(const l of dec){ const w = words(l.data);
-    a0 -= Number(U(w[1]))/Math.pow(10,d0); a1 -= Number(U(w[2]))/Math.pow(10,d1); }
-  return {a0, a1};
+  // в данных Increase/Decrease: [ликвидность, amount0, amount1];
+  // в данных Collect: [получатель, amount0, amount1]
+  const sum = ls => ls.reduce((acc, l) => { const w = words(l.data);
+    acc[0] += Number(U(w[1]))/Math.pow(10,d0);
+    acc[1] += Number(U(w[2]))/Math.pow(10,d1); return acc; }, [0,0]);
+  const [dep0, dep1] = sum(inc);
+  const [wd0,  wd1 ] = sum(dec);
+  const [col0, col1] = sum(col);
+  // Collect отдаёт и комиссии, И тело, выведенное через Decrease. Без вычитания
+  // тела заработок был бы завышен на всю сумму закрытой части позиции.
+  return {dep0, dep1, wd0, wd1,
+          fee0: Math.max(0, col0-wd0), fee1: Math.max(0, col1-wd1)};
 }
 
 async function loadPositionDetails(p, owner){
@@ -684,17 +686,20 @@ async function loadPositionDetails(p, owner){
     feesUsd = feeE*price + feeU;
   }catch(_){}
   const inRange = tick>=p.tl && tick<=p.tu;
-  let dep = null, hodl = null, il = null, ilPct = null;
+  let dep = null, hodl = null, il = null, ilPct = null, earned = null;
   try{
-    dep = await depositedAmounts(p.id, t0.decimals, t1.decimals);
-    if(dep){
-      hodl = dep.a0*price + dep.a1;
-      // комиссии в сравнение не входят: это отдельный доход, а не изменение тела
-      if(hodl > 0){ il = value - hodl; ilPct = il/hodl*100; }
+    const f = await positionFlows(p.id, t0.decimals, t1.decimals);
+    if(f){
+      dep = {a0: f.dep0, a1: f.dep1};
+      hodl = f.dep0*price + f.dep1;                     // держали бы внесённое
+      const withdrawn = f.wd0*price + f.wd1;            // уже выведенное тело
+      earned = f.fee0*price + f.fee1 + feesUsd;         // снятые плюс несобранные
+      // итог позиции против удержания: тело + вывод + весь заработок комиссий
+      if(hodl > 0){ il = value + withdrawn + earned - hodl; ilPct = il/hodl*100; }
     }
   }catch(_){}
   return {...p, pool, t0, t1, price, tick, poolLiq, e, u, value,
-    feeE, feeU, feesUsd, inRange, dep, hodl, il, ilPct,
+    feeE, feeU, feesUsd, inRange, dep, hodl, il, ilPct, earned,
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
@@ -932,12 +937,18 @@ async function realizedFees(tokenId, price, d0, d1){
   const head = Number(await rpc("eth_blockNumber",[]));
   const from = Math.max(0, head - Math.floor(400*86400*RATE));   // ~400 дней вглубь
   try{
-    const logs = await rpc("eth_getLogs",[{fromBlock:"0x"+from.toString(16),
-      toBlock:"latest", address:NPM, topics:[COLLECT_TOPIC,"0x"+padN(tokenId)]}]);
+    const range = {fromBlock:"0x"+from.toString(16), toBlock:"latest", address:NPM};
+    const [logs, dec] = await Promise.all([
+      rpc("eth_getLogs",[{...range, topics:[COLLECT_TOPIC,"0x"+padN(tokenId)]}]),
+      rpc("eth_getLogs",[{...range, topics:[DECREASE_TOPIC,"0x"+padN(tokenId)]}]).catch(()=>[]),
+    ]);
     let e=0,u=0;
     for(const l of logs){ const w=words(l.data);
       e += Number(U(w[1]))/Math.pow(10,d0); u += Number(U(w[2]))/Math.pow(10,d1); }
-    return e*price+u;
+    // Collect включает тело, выведенное через Decrease, — иначе APR завышен
+    for(const l of dec){ const w=words(l.data);
+      e -= Number(U(w[1]))/Math.pow(10,d0); u -= Number(U(w[2]))/Math.pow(10,d1); }
+    return Math.max(0, e*price+u);
   }catch(_){ return 0; }
 }
 
@@ -1027,7 +1038,9 @@ function tileHtml(p){
         <span class="v">${p.dep.a0.toFixed(5)} ${p.t0.symbol} + ${p.dep.a1.toFixed(2)} ${p.t1.symbol}</span></div>
       <div class="row"><span class="k">Если бы просто держали</span>
         <span class="v">${money(p.hodl)}</span></div>
-      <div class="row"><span class="k">Импермент лосс</span>
+      <div class="row"><span class="k">Заработано комиссий</span>
+        <span class="v good">${money(p.earned)}</span></div>
+      <div class="row"><span class="k">Импермент лосс с комиссиями</span>
         <span class="v ${ilCls(p.il)}">${ilText(p.il, p.ilPct)}</span></div>`:""}
       <div class="row"><span class="k">Активная ликвидность пула</span>
         <span class="v">${fmtUsd(activeLiquidityUsd(p.poolLiq,p.price,p.t0.decimals,p.t1.decimals,1.0))} (±0,5%)</span></div>
