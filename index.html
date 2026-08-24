@@ -110,6 +110,7 @@ td:first-child,th:first-child{text-align:left}
 .rec-row:last-child{border-bottom:none}
 .rec-pair{font-weight:650;font-size:14px}
 .rec-range{font-size:12.5px;color:var(--dim);margin-top:2px}
+.rec-apr-sub{font-size:9px;font-weight:500;opacity:.7;margin-top:2px}
 .rec-apr{font-weight:700;font-size:14px;text-align:right;flex-shrink:0;
   white-space:nowrap}
 .rec-form{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
@@ -159,6 +160,8 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="pbox"><div class="pk">Изменение</div><div class="pv" id="pAll">—</div></div>
     </div>
   </div>
+
+  <div class="card" id="closedCard" style="display:none"></div>
 
   <div class="card" id="recCard">
     <div class="lbl">Рекомендуемый диапазон</div>
@@ -515,6 +518,8 @@ async function calcRecommendation(){
     const w = best.w, r = best.r;
     const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
     const unreachable = Math.abs(best.got - target) > target*0.1 + 0.5;
+    // нетто за окно, приведённое к месяцу: комиссии минус расхождение
+    const netMonthPct = r.net/cap*100*(30/sample.days);
     const dp = p.price < 10 ? 4 : 0;
     const dpp = p.price < 10 ? 6 : 2;
     body.innerHTML = `
@@ -530,6 +535,8 @@ async function calcRecommendation(){
           $${r.pEnd.toLocaleString("ru",{maximumFractionDigits:dpp})}; диапазон
           такой же ширины вокруг цены на начало окна поймал
           <b>${(r.fracVol*100).toFixed(0)}%</b> оборота</div>
+        <div class="rec-range">цель по комиссиям <b>${best.got.toFixed(1)}%/мес</b>
+          достигнута шириной ${w.toFixed(1)}%</div>
         <div class="rec-range">комиссии ${money(r.feesWindow)} за 7 дней ·
           расхождение <b class="${r.div>=0?"ok":"bad"}">${
             r.div>=0?"+":"−"}${money(Math.abs(r.div))}</b> ·
@@ -543,7 +550,9 @@ async function calcRecommendation(){
           'на этой истории диапазон был убыточен против простого удержания</div>':''}
         ${unreachable?'<div class="rec-warn">цель недостижима на истории этого пула — '+
           'показана ближайшая достижимая граница</div>':''}
-      </div><div class="rec-apr ${unreachable?"warn":"good"}">~${best.got.toFixed(1)}%/мес</div></div>`;
+      </div><div class="rec-apr ${netMonthPct>=0?"good":"bad"}">${
+        netMonthPct>=0?"+":"−"}${Math.abs(netMonthPct).toFixed(1)}%/мес
+        <div class="rec-apr-sub">итог на истории</div></div></div>`;
   }catch(e){
     body.innerHTML = '<span class="err">Ошибка: '+String(e.message||e)+'</span>';
   }
@@ -1040,6 +1049,68 @@ async function poolVolume(pool, d0, hours=2, isV4=false){
 
 
 
+// ---------- закрытые позиции за последние 7 дней ----------
+async function renderClosed(all){
+  const box = document.getElementById("closedCard");
+  if(!box) return;
+  box.style.display = "none";
+  try{
+    if(!all.length) return;
+    const head = Number(await rpc("eth_blockNumber",[]));
+    const since = head - Math.floor(7*86400*RATE);
+    const rows = [];
+    // v4 сюда не попадает: потоки читаются из менеджера v3
+    for(const c of all.filter(x=>!x.isV4).slice(0, 12)){
+      try{
+        const det = await loadPositionDetails(c, OWNER);
+        const f = await positionFlows(det.id, det.t0.decimals, det.t1.decimals);
+        if(!f || f.lastBlock < since) continue;
+        rows.push({det, f, days:(head-f.lastBlock)/RATE/86400});
+      }catch(_){}
+    }
+    if(!rows.length) return;
+    rows.sort((a,b)=>a.days-b.days);
+    box.style.display = "block";
+    box.innerHTML = `<div class="lbl">Закрыто за 7 дней</div>` + rows.map(({det,f,days})=>{
+      const dp = det.price<10?4:0;
+      return `<div class="rec-row" style="border-top:1px solid var(--line);padding-top:8px">
+        <div>
+          <div class="rec-pair">${det.t0.symbol}/${det.t1.symbol} · ${
+            (det.fee/1e4).toFixed(det.fee<100?4:2)}% · #${det.id}</div>
+          <div class="rec-range">диапазон был $${det.lo.toLocaleString("ru",
+            {maximumFractionDigits:dp})} … $${det.hi.toLocaleString("ru",
+            {maximumFractionDigits:dp})} · закрыта ${days<1?
+            Math.round(days*24)+" ч":days.toFixed(1)+" дн"} назад</div>
+          <div class="rec-range">комиссии ${money(det.earned||0)} · расхождение ${
+            det.div===null?"н/д":(det.div>=0?"+":"−")+money(Math.abs(det.div))}</div>
+        </div>
+        <div class="rec-apr ${(det.il||0)>=0?"good":"bad"}">${
+          det.il===null?"н/д":(det.il>=0?"+":"−")+money(Math.abs(det.il))}
+          <div class="rec-apr-sub">итог</div></div>
+      </div>`; }).join("");
+  }catch(_){ }
+}
+
+// ---------- когда реинвестировать комиссии ----------
+// сложный процент растёт с частотой, газ — тоже. Оптимум там, где прирост от
+// более частого довнесения перестаёт покрывать стоимость операции.
+const GAS_PER_COMPOUND = 0.03;   // Arbitrum: замер по чекам ~0,012 $/тр., компаунд это две
+function compoundAdvice(feePerDay, value, horizon=30, gas=GAS_PER_COMPOUND){
+  if(!(feePerDay>0) || !(value>0)) return null;
+  const r = feePerDay/value;                       // доля от капитала в сутки
+  const simple = value*r*horizon;                  // без реинвеста
+  let best = {days:null, net:simple};
+  for(const T of [0.25,0.5,1,2,3,5,7,10,14,21,30]){
+    const n = Math.floor(horizon/T);
+    if(n<1) continue;
+    const grown = value*(Math.pow(1+r*T, n) - 1);
+    const net = grown - n*gas;
+    if(net > best.net) best = {days:T, net, n};
+  }
+  return {...best, simple, gain: best.net - simple,
+          gainPct: simple>0 ? (best.net-simple)/simple*100 : 0};
+}
+
 // ---------- бэктест диапазона на реальной истории ----------
 // сплошная выкачка 7 дней это ~270 запросов и падающий RPC, поэтому берём
 // равномерную выборку блоков: доля оборота внутри диапазона по ней несмещённая,
@@ -1141,7 +1212,7 @@ function widthForTargetBacktest(sample, price, capital, feeFrac, poolLiq, d0, d1
   const anchor = sample.swaps.length ? sample.swaps[0].p : price;
   // потолок строго ниже 200%: при 200% нижняя граница обращается в ноль,
   // а выше — становится отрицательной, и корень из неё даёт NaN
-  let loW = 0.1, hiW = 190, best = null;
+  let loW = 0.3, hiW = 190, best = null;
   for(let i=0;i<40;i++){
     const w = (loW+hiW)/2;
     const r = backtest(sample, anchor*(1-w/200), anchor*(1+w/200), capital,
@@ -1220,6 +1291,14 @@ function tileHtml(p){
           (p.ageDays*24).toFixed(1)+" ч":p.ageDays.toFixed(1)+" дн"}</span></div>
       <div class="row"><span class="k">Комиссии в день</span>
         <span class="v">${p.feePerDay===null?"н/д":money(p.feePerDay)}</span></div>
+      ${(()=>{ const a = compoundAdvice(p.feePerDay, p.value);
+        if(!a) return "";
+        const txt = a.days===null
+          ? "не реинвестировать — газ съест прирост"
+          : (a.days<1 ? `раз в ${Math.round(a.days*24)} ч` : `раз в ${a.days} дн`) +
+            ` (+${money(a.gain)} за месяц)`;
+        return `<div class="row"><span class="k">Реинвестировать</span>
+          <span class="v ${a.days===null?"dim":"good"}">${txt}</span></div>`; })()}
       <div class="row"><span class="k">ROI (не в годовых)</span>
         <span class="v ${ilCls(p.roi)}">${p.roi===null?"н/д":
           (p.roi>=0?"+":"")+p.roi.toFixed(2)+"%"}</span></div>
@@ -1308,7 +1387,8 @@ async function load(){
     }
 
     document.getElementById("summary").style.display = "block";
-    loadCapitalStats(detailed);   // не блокирует остальной рендер — своя обработка ошибок внутри
+    loadCapitalStats(detailed);
+    renderClosed([...(basics.closedPositions||[]), ...(v4basics.closedPositions||[])]);   // не блокирует остальной рендер — своя обработка ошибок внутри
 
     const totalValue = detailed.reduce((s,p)=>s+p.value,0);
     const totalUnclaimed = detailed.reduce((s,p)=>s+p.feesUsd,0);
