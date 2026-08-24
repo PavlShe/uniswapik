@@ -155,7 +155,7 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="pbox"><div class="pk">Депозиты</div><div class="pv" id="pDay">—</div></div>
       <div class="pbox"><div class="pk">Активы сейчас</div><div class="pv" id="pWeek">—</div></div>
       <div class="pbox"><div class="pk">Газ (оценка)</div><div class="pv" id="pMonth">—</div></div>
-      <div class="pbox"><div class="pk">APR</div><div class="pv" id="pAll">—</div></div>
+      <div class="pbox"><div class="pk">Изменение</div><div class="pv" id="pAll">—</div></div>
     </div>
   </div>
 
@@ -851,21 +851,9 @@ async function loadCapitalStats(detailed){
     }
     const depositsUsd = wethDepUsd + depU.total + nativeDepositUsd;
 
-    let earliestBlock = null;
-    for(const b of nativeBlocks) if(earliestBlock===null || b.block<earliestBlock)
-      earliestBlock = b.block;
-    for(const d of [depW, depU]) if(d.earliestBlock!==null &&
-        (earliestBlock===null || d.earliestBlock<earliestBlock)) earliestBlock = d.earliestBlock;
-
-    const head = Number(await rpc("eth_blockNumber",[]));
-    const headTs = Number((await rpc("eth_getBlockByNumber",["latest",false])).timestamp);
-    const ageDays = earliestBlock!==null ? (head-earliestBlock)/RATE/86400 : null;
-
     // газ уже учтён внутри depositsUsd (через восстановленный нативный ETH),
     // повторно вычитать его нельзя — иначе двойной счёт
     const net = assetsNow - depositsUsd;
-    const apr = (depositsUsd>0 && ageDays!==null && ageDays>0)
-      ? net/depositsUsd*365/ageDays*100 : null;
 
     const setPBox = (id, text, cls) => {
       const el = document.getElementById(id);
@@ -877,8 +865,8 @@ async function loadCapitalStats(detailed){
     setPBox("pWeek", money(assetsNow), "");
     if(assetsNow > 0) portfolioCapital = assetsNow;   // доля в пуле зависит от размера капитала
     setPBox("pMonth", (gasExact?"":"≈")+money(gasEstUsd), "");
-    setPBox("pAll", apr!==null ? (apr>=0?"+":"")+apr.toFixed(1)+"%" : "н/д",
-      apr===null ? "dim" : (apr>=0?"good":"bad"));
+    setPBox("pAll", depositsUsd>0 ? (net>=0?"+":"")+money(net) : "н/д",
+      depositsUsd>0 ? (net>=0?"good":"bad") : "dim");
   }catch(e){
     ["pDay","pWeek","pMonth","pAll"].forEach(id=>{
       document.getElementById(id).textContent = "ошибка";
