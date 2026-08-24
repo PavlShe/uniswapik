@@ -780,10 +780,20 @@ async function arbiscanTxList(owner){
   if(!k) return null;
   const url = "https://api.etherscan.io/v2/api?chainid=42161&module=account"+
     "&action=txlist&address="+owner+"&startblock=0&endblock=99999999&sort=asc&apikey="+k;
-  const r = await fetch(url);
-  const j = await r.json();
-  if(j.status !== "1" || !Array.isArray(j.result)) return {error: j.message || "отказ API"};
-  return {txs: j.result};
+  // ключ общий на всех пользователей, а бесплатный лимит — 5 запросов в секунду,
+  // поэтому одновременные открытия страницы надо переждать, а не считать отказом
+  let last = "отказ API";
+  for(let attempt=0; attempt<3; attempt++){
+    if(attempt) await new Promise(r=>setTimeout(r, 700*attempt + 400));
+    try{
+      const r = await fetch(url);
+      const j = await r.json();
+      if(j.status === "1" && Array.isArray(j.result)) return {txs: j.result};
+      last = j.message === "NOTOK" && /rate limit/i.test(j.result||"")
+        ? "лимит запросов" : (j.result || j.message || "отказ API");
+    }catch(e){ last = "сеть недоступна"; }
+  }
+  return {error: last};
 }
 
 async function loadCapitalStats(detailed){
