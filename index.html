@@ -100,6 +100,12 @@ td:first-child,th:first-child{text-align:left}
 .rec-range{font-size:12.5px;color:var(--dim);margin-top:2px}
 .rec-apr{font-weight:700;font-size:14px;text-align:right;flex-shrink:0;
   white-space:nowrap}
+.rec-target{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.rec-target input{width:60px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);
+  background:var(--bg);color:var(--ink);font:14px ui-monospace,Menlo,monospace;
+  text-align:center}
+.rec-target button{width:auto;padding:8px 14px;font-size:13px;flex-shrink:0}
+.rec-warn{color:var(--warn);font-size:11.5px;margin-top:2px}
 input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);
   background:var(--bg);color:var(--ink);font:13px ui-monospace,Menlo,monospace}
 </style>
@@ -138,21 +144,28 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       <div class="pbox"><div class="pk">Месяц</div><div class="pv" id="pMonth">—</div></div>
       <div class="pbox"><div class="pk">Всё время</div><div class="pv" id="pAll">—</div></div>
     </div>
-    <p class="note">День/неделя/месяц/всё время — изменение стоимости портфеля
-      с начала использования приложения <b>на этом устройстве</b>: у публичного
-      RPC нет истории состояний, поэтому приложение само копит замеры локально.
-      «Комиссии всего» — исключение, это точный ончейн-показатель, доступен сразу.</p>
+    <p class="note">День/неделя/месяц — <b>доходность от комиссий</b>, посчитана
+      сразу из уже загруженных данных (накопленные комиссии и возраст позиции),
+      без ожидания. Это не полный P&L: без архивного RPC нельзя узнать, сколько
+      стоила позиция раньше, поэтому движение цены базового актива сюда не входит
+      — только доход от комиссий по текущему темпу накопления. «Всё время» —
+      фактический показатель с открытия позиции, не проекция.</p>
   </div>
 
   <div class="card" id="recCard" style="display:none">
-    <div class="lbl">Рекомендуемый диапазон · цель 10%/мес (валовые)</div>
-    <div id="recBody" class="note">считаю…</div>
+    <div class="lbl">Рекомендуемый диапазон</div>
+    <div class="rec-target">
+      <span class="sub">Цель, % в месяц (валовые)</span>
+      <input id="recTarget" type="text" inputmode="decimal" value="10">
+      <button id="recCalc">Рассчитать</button>
+    </div>
+    <div id="recBody" class="note">считаю оборот…</div>
     <p class="note">Ширина подобрана так, чтобы <b>валовые</b> комиссии при
-      текущем обороте пула и текущей активной ликвидности давали ~10% в месяц.
-      Это без учёта потерь на движении цены и газа на переносы — фактический
-      результат обычно ниже, как и APR на плитках выше. Оборот оценивается
-      по последним 2 часам, капитал — по стоимости вашей текущей позиции
-      в этом пуле.</p>
+      текущем обороте пула и текущей активной ликвидности давали заданный
+      процент в месяц. Это без учёта потерь на движении цены и газа на
+      переносы — фактический результат обычно ниже, как и APR на плитках
+      выше. Оборот оценивается по последним 2 часам и не пересчитывается
+      заново при смене цели — только сама ширина.</p>
   </div>
 
   <div class="tiles" id="tiles"></div>
@@ -265,6 +278,41 @@ else if (matchMedia("(prefers-color-scheme:dark)").matches)
 
 let OWNER = new URLSearchParams(location.search).get("a") || localStorage.getItem("owner") || "";
 const RE = /^0x[0-9a-fA-F]{40}$/;
+let recData = [];   // {p, volUsd, missing} на пул — оборот кешируется, ширина пересчитывается по вводу
+
+function parseRecTarget(){
+  const raw = (document.getElementById("recTarget").value || "").replace(",", ".");
+  const v = parseFloat(raw);
+  return (isFinite(v) && v > 0) ? v : 10;
+}
+
+function renderRecRows(targetMonthPct){
+  const targetYear = targetMonthPct * 12;
+  for(const {p, volUsd, missing} of recData){
+    const row = document.querySelector(`[data-rec="${p.pool}"]`);
+    if(!row) continue;
+    const w = widthForTargetApr(targetYear, p.price, p.poolLiq,
+      p.fee/1e6, volUsd, p.value, p.t0.decimals, p.t1.decimals);
+    const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
+    const achieved = grossAprYear(w, p.price, p.poolLiq, p.fee/1e6, volUsd,
+      p.value, p.t0.decimals, p.t1.decimals);
+    const unreachable = Math.abs(achieved/12 - targetMonthPct) > targetMonthPct*0.1 + 0.5;
+    row.querySelector(".rec-range").innerHTML =
+      `ширина ${w.toFixed(1)}% · $${lo.toLocaleString("ru",{maximumFractionDigits:0})}`+
+      ` … $${hi.toLocaleString("ru",{maximumFractionDigits:0})}`+
+      (missing?` (оборот частично)`:``)+
+      (unreachable?`<div class="rec-warn">цель недостижима при текущем обороте — `+
+        `показана ближайшая граница диапазона расчёта</div>`:``);
+    const el = row.querySelector(".rec-apr");
+    el.textContent = `~${(achieved/12).toFixed(1)}%/мес`;
+    el.className = "rec-apr " + (unreachable ? "warn" : "good");
+  }
+}
+
+document.getElementById("recCalc").onclick = () => renderRecRows(parseRecTarget());
+document.getElementById("recTarget").addEventListener("keydown", e=>{
+  if(e.key === "Enter") renderRecRows(parseRecTarget());
+});
 
 function showSetup(on){
   document.getElementById("setup").style.display = on ? "block" : "none";
@@ -399,33 +447,34 @@ async function poolVolume(pool, d0, hours=2){
   return {vol0: vol0*24/hours, nswaps:n, missing, chunks:chunks.length};
 }
 
-// ---------- локальная история для день/неделя/месяц ----------
-const HIST_KEY = "worth_history_v1";
-function loadHistory(){ try{return JSON.parse(localStorage.getItem(HIST_KEY))||[];}
-  catch(_){return [];} }
-function pushSnapshot(worth){
-  const h = loadHistory(); const now = Date.now();
-  h.push({ts:now, worth});
-  const cutoff = now - 400*86400*1000;
-  const pruned = h.filter(x=>x.ts>=cutoff);
-  if(pruned.length>600) pruned.splice(0, pruned.length-600);
-  localStorage.setItem(HIST_KEY, JSON.stringify(pruned));
-  return pruned;
-}
-function baselineFor(hist, msAgo){
-  const target = Date.now()-msAgo;
-  let best=null;
-  for(const x of hist){ if(x.ts<=target && (!best || x.ts>best.ts)) best=x; }
-  return best;
-}
-function renderPeriod(elId, hist, msAgo){
-  const el = document.getElementById(elId);
-  const base = baselineFor(hist, msAgo);
-  if(!base){ el.textContent="нет данных"; el.className="pv dim"; return; }
-  const now = hist[hist.length-1].worth;
-  const d = now-base.worth, pct = base.worth ? d/base.worth*100 : 0;
-  el.className = "pv " + (d>0?"good":d<0?"bad":"");
-  el.textContent = (d>=0?"+":"")+fmtUsd(d)+" ("+(pct>=0?"+":"")+pct.toFixed(1)+"%)";
+// ---------- доходность портфеля по уже загруженным данным (без ожидания) ----------
+// период = темп накопления комиссий (капитал-взвешенный по позициям с известным
+// возрастом), спроецированный на 1/7/30 дней. Не включает движение цены базового
+// актива — этого нельзя узнать без архивного RPC, только доход от комиссий.
+function renderFeeBasedPeriods(detailed, ages, realized){
+  const known = detailed.map((p,i)=>({p, age: ages[i], fees: p.feesUsd+realized[i]}))
+    .filter(x=>x.age!==null && x.age>0 && x.p.value>0);
+  const boxes = [["pDay",1,false],["pWeek",7,false],["pMonth",30,false]];
+  if(!known.length){
+    [...boxes.map(b=>b[0]), "pAll"].forEach(id=>{
+      const el = document.getElementById(id);
+      el.textContent = "н/д"; el.className = "pv dim";
+    });
+    return;
+  }
+  const sumValue = known.reduce((s,x)=>s+x.p.value,0);
+  const sumFees = known.reduce((s,x)=>s+x.fees,0);
+  const avgAgeDays = known.reduce((s,x)=>s+x.age*x.p.value,0)/sumValue;
+  const dailyFrac = sumFees/sumValue/avgAgeDays;    // доля от капитала в день
+
+  function setBox(id, frac){
+    const el = document.getElementById(id);
+    const dollars = frac*sumValue, pct = frac*100;
+    el.className = "pv " + (frac>0?"good":"");
+    el.textContent = (frac>=0?"+":"")+fmtUsd(dollars)+" ("+(pct>=0?"+":"")+pct.toFixed(2)+"%)";
+  }
+  for(const [id, days] of boxes) setBox(id, dailyFrac*days);
+  setBox("pAll", sumFees/sumValue);   // фактически накопленное с открытия, не проекция
 }
 
 // ---------- рендер плитки ----------
@@ -538,9 +587,10 @@ async function load(){
       }
     });
 
-    // ---------- рекомендуемый диапазон под целевой APR ----------
+    // ---------- рекомендуемый диапазон: оборот кешируем, ширина пересчитывается по вводу ----------
     const pools = new Map();
     for(const p of detailed) if(!pools.has(p.pool)) pools.set(p.pool, p);
+    recData = [];
     if(pools.size){
       document.getElementById("recCard").style.display = "block";
       const recBody = document.getElementById("recBody");
@@ -549,29 +599,18 @@ async function load(){
         <div><div class="rec-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(2)}%</div>
         <div class="rec-range">считаю оборот…</div></div>
         <div class="rec-apr dim">…</div></div>`).join("");
-      const TARGET_YEAR = 10*12;   // 10%/мес -> 120%/год
       await Promise.all(entries.map(async p=>{
-        const row = recBody.querySelector(`[data-rec="${p.pool}"]`);
         try{
           const v = await poolVolume(p.pool, p.t0.decimals, 2);
-          const volUsd = v.vol0*p.price;
-          const w = widthForTargetApr(TARGET_YEAR, p.price, p.poolLiq,
-            p.fee/1e6, volUsd, p.value, p.t0.decimals, p.t1.decimals);
-          const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
-          const achieved = grossAprYear(w, p.price, p.poolLiq, p.fee/1e6, volUsd,
-            p.value, p.t0.decimals, p.t1.decimals);
-          row.querySelector(".rec-range").textContent =
-            `ширина ${w.toFixed(1)}% · $${lo.toLocaleString("ru",{maximumFractionDigits:0})}`+
-            ` … $${hi.toLocaleString("ru",{maximumFractionDigits:0})}`+
-            (v.missing?` (оборот частично)`:``);
-          const el = row.querySelector(".rec-apr");
-          el.textContent = `~${(achieved/12).toFixed(1)}%/мес`;
-          el.className = "rec-apr good";
+          recData.push({p, volUsd: v.vol0*p.price, missing: v.missing});
         }catch(e){
+          const row = recBody.querySelector(`[data-rec="${p.pool}"]`);
           row.querySelector(".rec-range").textContent = "не удалось посчитать оборот";
-          row.querySelector(".rec-apr").textContent = "";
         }
       }));
+      renderRecRows(parseRecTarget());
+    } else {
+      document.getElementById("recCard").style.display = "none";
     }
 
     document.getElementById("summary").style.display="block";
@@ -580,18 +619,7 @@ async function load(){
       detailed.length===1?"позиция":detailed.length<5?"позиции":"позиций"}`;
     document.getElementById("sumFees").textContent = money(totalFeesAllTime);
 
-    const worth = totalValue + totalFeesAllTime;
-    const hist = pushSnapshot(worth);
-    renderPeriod("pDay", hist, 24*3600*1000);
-    renderPeriod("pWeek", hist, 7*24*3600*1000);
-    renderPeriod("pMonth", hist, 30*24*3600*1000);
-    const allBase = hist[0];
-    if(hist.length>1 && allBase.ts < Date.now()-3600*1000){
-      renderPeriod("pAll", hist, Date.now()-allBase.ts);
-    } else {
-      document.getElementById("pAll").textContent="первый запуск";
-      document.getElementById("pAll").className="pv dim";
-    }
+    renderFeeBasedPeriods(detailed, ages, realized);
 
     document.getElementById("loading").textContent =
       `${detailed.length} ${detailed.length===1?"позиция":"позиций"} загружено`;
