@@ -68,6 +68,9 @@ td:first-child,th:first-child{text-align:left}
 .tile-pair{font-weight:650;font-size:14.5px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
 .tile-sub{font-size:12px;color:var(--dim)}
+.tile-price{font-size:13px;color:var(--dim);margin:-4px 14px 8px;
+  font-variant-numeric:tabular-nums}
+.tile-price b{color:var(--ink);font-weight:650}
 .tile-right{text-align:right;flex-shrink:0}
 .tile-value{font-weight:700;font-size:16px;font-variant-numeric:tabular-nums}
 .tile-fees{font-size:12px;font-variant-numeric:tabular-nums}
@@ -208,6 +211,16 @@ function activeLiquidityUsd(Lpool,P,d0,d1,bandPct){
   const pl=pr*(1-bandPct/200), pu=pr*(1+bandPct/200);
   const den=2*Math.sqrt(pr)-pr/Math.sqrt(pu)-Math.sqrt(pl);
   return den>0 ? Lpool*den/Math.pow(10,d1) : 0;
+}
+const STABLES = new Set(["USDT","USDC","USD₮0","DAI","USDE","SUSDE","TUSD",
+  "BUSD","FRAX","USDS","GHO","LUSD","CRVUSD"]);
+function tilePriceLabel(p){
+  const s0=p.t0.symbol.toUpperCase(), s1=p.t1.symbol.toUpperCase();
+  if(STABLES.has(s1)) return "Цена "+p.t0.symbol+": <b>$"+p.price.toLocaleString("ru",
+    {maximumFractionDigits: p.price>=100?2:4})+"</b>";
+  if(STABLES.has(s0)) return "Цена "+p.t1.symbol+": <b>$"+(1/p.price).toLocaleString("ru",
+    {maximumFractionDigits: (1/p.price)>=100?2:4})+"</b>";
+  return "1 "+p.t0.symbol+" = <b>"+p.price.toLocaleString("ru",{maximumFractionDigits:4})+" "+p.t1.symbol+"</b>";
 }
 function amounts(L,P,tl,tu,d0,d1){
   const k=Math.pow(10,d1-d0);
@@ -370,6 +383,7 @@ function tileHtml(p){
       </div>
       <div class="chev">▾</div>
     </div>
+    <div class="tile-price">${tilePriceLabel(p)}</div>
     <div class="tile-bar"><div class="now" style="left:${pos}%"></div></div>
     <div class="tile-detail">
       <div class="row"><span class="k">Диапазон</span>
