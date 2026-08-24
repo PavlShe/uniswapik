@@ -60,7 +60,19 @@ tr.me td{background:rgba(47,111,235,.12);font-weight:650}
 </head>
 <body>
 <div class="wrap">
-  <div class="card">
+  <div class="card" id="setup" style="display:none">
+    <div class="lbl">Кошелёк</div>
+    <p class="note">Укажите адрес в сети Arbitrum. Приложение только читает
+      блокчейн — приватный ключ не нужен.</p>
+    <input id="addrIn" placeholder="0x…" autocomplete="off" spellcheck="false"
+      style="width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);
+             background:var(--bg);color:var(--ink);font:13px ui-monospace,Menlo,monospace;
+             margin:8px 0">
+    <div id="addrErr" class="err" style="margin-bottom:8px"></div>
+    <button id="addrSave">Сохранить</button>
+  </div>
+
+  <div class="card" id="mainCard">
     <h1 id="pair">WETH / USD₮0 · 0.05%</h1>
     <div class="sub" id="addr">—</div>
     <div class="price" id="price">—</div>
@@ -86,6 +98,8 @@ tr.me td{background:rgba(47,111,235,.12);font-weight:650}
   </div>
 
   <button id="refresh">Обновить</button>
+  <button id="changeAddr" style="background:transparent;color:var(--dim);
+    border:1px solid var(--line);margin-top:-2px">Сменить кошелёк</button>
   <p class="note" id="foot"></p>
 </div>
 
@@ -97,12 +111,11 @@ const CFG = {
   token1:"0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
   d0:18, d1:6, fee:500,
   owner: new URLSearchParams(location.search).get("a")
-         || localStorage.getItem("owner")
-         || "0x341CD76975786282452C2ddA1485FFf9BA0fA580",
+         || localStorage.getItem("owner") || "",
   rpcs:["https://arb1.arbitrum.io/rpc",
         "https://arbitrum-one.publicnode.com"],
 };
-localStorage.setItem("owner", CFG.owner);
+if (CFG.owner) localStorage.setItem("owner", CFG.owner);
 
 const SEL={slot0:"0x3850c7bd",liq:"0x1a686502",bal:"0x70a08231",
   tokenOf:"0x2f745c59",positions:"0x99fbab88",collect:"0xfc6f7865"};
@@ -292,8 +305,38 @@ async function load(){
     document.getElementById("refresh").disabled = false;
   }
 }
+const CARDS=["mainCard","poolCard","posCard","aprCard"];
+function showSetup(on){
+  document.getElementById("setup").style.display = on ? "block" : "none";
+  CARDS.forEach(id=>{ const el=document.getElementById(id);
+    if(el) el.style.display = on ? "none" : "block"; });
+  document.getElementById("refresh").style.display = on ? "none" : "block";
+  document.getElementById("changeAddr").style.display = on ? "none" : "block";
+}
+const RE=/^0x[0-9a-fA-F]{40}$/;
+document.getElementById("addrSave").onclick = () => {
+  const v=document.getElementById("addrIn").value.trim();
+  if(!RE.test(v)){
+    document.getElementById("addrErr").textContent =
+      "Адрес должен начинаться с 0x и содержать 40 символов";
+    return;
+  }
+  localStorage.setItem("owner", v);
+  CFG.owner = v;
+  document.getElementById("addrErr").textContent = "";
+  showSetup(false);
+  load();
+};
+document.getElementById("addrIn").addEventListener("keydown", e=>{
+  if(e.key==="Enter") document.getElementById("addrSave").click(); });
+document.getElementById("changeAddr").onclick = () => {
+  document.getElementById("addrIn").value = CFG.owner || "";
+  showSetup(true);
+};
 document.getElementById("refresh").onclick = load;
-load();
+
+if (CFG.owner && RE.test(CFG.owner)) { showSetup(false); load(); }
+else showSetup(true);
 </script>
 </body>
 </html>
