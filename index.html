@@ -93,6 +93,13 @@ td:first-child,th:first-child{text-align:left}
 .chev{color:var(--dim);font-size:12px;transition:transform .15s}
 .tile.open .chev{transform:rotate(180deg)}
 
+.rec-row{display:flex;justify-content:space-between;align-items:center;
+  gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.rec-row:last-child{border-bottom:none}
+.rec-pair{font-weight:650;font-size:14px}
+.rec-range{font-size:12.5px;color:var(--dim);margin-top:2px}
+.rec-apr{font-weight:700;font-size:14px;text-align:right;flex-shrink:0;
+  white-space:nowrap}
 input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);
   background:var(--bg);color:var(--ink);font:13px ui-monospace,Menlo,monospace}
 </style>
@@ -135,6 +142,17 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
       с начала использования приложения <b>на этом устройстве</b>: у публичного
       RPC нет истории состояний, поэтому приложение само копит замеры локально.
       «Комиссии всего» — исключение, это точный ончейн-показатель, доступен сразу.</p>
+  </div>
+
+  <div class="card" id="recCard" style="display:none">
+    <div class="lbl">Рекомендуемый диапазон · цель 10%/мес (валовые)</div>
+    <div id="recBody" class="note">считаю…</div>
+    <p class="note">Ширина подобрана так, чтобы <b>валовые</b> комиссии при
+      текущем обороте пула и текущей активной ликвидности давали ~10% в месяц.
+      Это без учёта потерь на движении цены и газа на переносы — фактический
+      результат обычно ниже, как и APR на плитках выше. Оборот оценивается
+      по последним 2 часам, капитал — по стоимости вашей текущей позиции
+      в этом пуле.</p>
   </div>
 
   <div class="tiles" id="tiles"></div>
@@ -345,6 +363,28 @@ async function realizedFees(tokenId, price, d0, d1){
   }catch(_){ return 0; }
 }
 
+function liqForCapitalUsd(capitalUsd, price, widthPct, d0, d1){
+  const k = Math.pow(10, d1-d0), pr = price*k;
+  const pl = pr*(1-widthPct/200), pu = pr*(1+widthPct/200);
+  const den = 2*Math.sqrt(pr) - pr/Math.sqrt(pu) - Math.sqrt(pl);
+  return den>0 ? capitalUsd*Math.pow(10,d1)/den : 0;
+}
+function grossAprYear(widthPct, price, poolLiq, feeFrac, volUsdDay, capitalUsd, d0, d1){
+  const Lo = liqForCapitalUsd(capitalUsd, price, widthPct, d0, d1);
+  const share = Lo/(poolLiq+Lo);
+  return feeFrac*volUsdDay*share*365/capitalUsd*100;
+}
+function widthForTargetApr(targetYearPct, price, poolLiq, feeFrac, volUsdDay, capitalUsd, d0, d1){
+  // валовый APR монотонно убывает с шириной -> обычный бинарный поиск
+  let lo=0.05, hi=300;
+  for(let i=0;i<80;i++){
+    const mid=(lo+hi)/2;
+    const apr=grossAprYear(mid, price, poolLiq, feeFrac, volUsdDay, capitalUsd, d0, d1);
+    if(apr>targetYearPct) lo=mid; else hi=mid;
+  }
+  return (lo+hi)/2;
+}
+
 async function poolVolume(pool, d0, hours=2){
   const head = Number(await rpc("eth_blockNumber",[]));
   const span = Math.floor(hours*3600*RATE), CH=4000;
@@ -497,6 +537,42 @@ async function load(){
         elm.className = "vm " + (aprM>=0?"good":"bad");
       }
     });
+
+    // ---------- рекомендуемый диапазон под целевой APR ----------
+    const pools = new Map();
+    for(const p of detailed) if(!pools.has(p.pool)) pools.set(p.pool, p);
+    if(pools.size){
+      document.getElementById("recCard").style.display = "block";
+      const recBody = document.getElementById("recBody");
+      const entries = [...pools.values()];
+      recBody.innerHTML = entries.map(p=>`<div class="rec-row" data-rec="${p.pool}">
+        <div><div class="rec-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(2)}%</div>
+        <div class="rec-range">считаю оборот…</div></div>
+        <div class="rec-apr dim">…</div></div>`).join("");
+      const TARGET_YEAR = 10*12;   // 10%/мес -> 120%/год
+      await Promise.all(entries.map(async p=>{
+        const row = recBody.querySelector(`[data-rec="${p.pool}"]`);
+        try{
+          const v = await poolVolume(p.pool, p.t0.decimals, 2);
+          const volUsd = v.vol0*p.price;
+          const w = widthForTargetApr(TARGET_YEAR, p.price, p.poolLiq,
+            p.fee/1e6, volUsd, p.value, p.t0.decimals, p.t1.decimals);
+          const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
+          const achieved = grossAprYear(w, p.price, p.poolLiq, p.fee/1e6, volUsd,
+            p.value, p.t0.decimals, p.t1.decimals);
+          row.querySelector(".rec-range").textContent =
+            `ширина ${w.toFixed(1)}% · $${lo.toLocaleString("ru",{maximumFractionDigits:0})}`+
+            ` … $${hi.toLocaleString("ru",{maximumFractionDigits:0})}`+
+            (v.missing?` (оборот частично)`:``);
+          const el = row.querySelector(".rec-apr");
+          el.textContent = `~${(achieved/12).toFixed(1)}%/мес`;
+          el.className = "rec-apr good";
+        }catch(e){
+          row.querySelector(".rec-range").textContent = "не удалось посчитать оборот";
+          row.querySelector(".rec-apr").textContent = "";
+        }
+      }));
+    }
 
     document.getElementById("summary").style.display="block";
     document.getElementById("sumValue").textContent = money(totalValue);
