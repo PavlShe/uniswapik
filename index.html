@@ -226,6 +226,15 @@ const AVG_TX_GAS_USD = 0.18;   // средняя стоимость операц
 const V4PM = "0xd88F38F930b7952f2DB2432Cb002E7abbF3dD869";
 const STATEVIEW = "0x76fd297e2d437cd7f76d50f01afe6160f86e9990";
 const V4_POOLMANAGER = "0x360e68faccca8ca495c1b759fd9eee466db9fb32";
+// подставляется при публикации из секрета репозитория; в исходниках — заполнитель.
+// объявление обязано стоять здесь, выше любого вызова arbiKey()
+const BUILT_IN_ARBI_KEY = "__ARBISCAN_KEY__";
+function builtInKey(){
+  // защита от случая, когда страница собрана без секрета
+  return BUILT_IN_ARBI_KEY.indexOf("ARBISCAN_KEY") >= 0 ? "" : BUILT_IN_ARBI_KEY;
+}
+// личный ключ пользователя имеет приоритет над общим
+function arbiKey(){ return localStorage.getItem("arbikey") || builtInKey(); }
 // всё, что приходит от этих контрактов, — возврат собственных средств, а не пополнение
 const PROTOCOL_ADDRS = new Set([
   "0xc36442b4a4522e871399cd717abdd847ab11fe88",   // NonfungiblePositionManager v3
@@ -543,12 +552,16 @@ document.getElementById("changeAddr").onclick = () => {
   document.getElementById("addrIn").value = OWNER || "";
   showSetup(true);
 };
-{const ai=document.getElementById("arbiIn"), ab=document.getElementById("arbiSave");
+// в приложении из одного файла исключение на верхнем уровне гасит всю страницу,
+// поэтому необязательная часть интерфейса не должна ронять остальное
+try{
+ const ai=document.getElementById("arbiIn"), ab=document.getElementById("arbiSave");
  if(ai){ ai.value = arbiKey();
    ab.onclick = () => { const v=ai.value.trim();
      if(v) localStorage.setItem("arbikey", v); else localStorage.removeItem("arbikey");
      ab.textContent="✓"; setTimeout(()=>ab.textContent="ок",1200); load(); };
-   ai.addEventListener("keydown", e=>{ if(e.key==="Enter") ab.click(); }); }}
+   ai.addEventListener("keydown", e=>{ if(e.key==="Enter") ab.click(); }); }
+}catch(e){ console.error("поле ключа Arbiscan не инициализировано:", e); }
 document.getElementById("refresh").onclick = load;
 
 // ---------- обнаружение позиций ----------
@@ -759,15 +772,6 @@ async function priceAtBlock(block){
   priceCache.set(block, p);
   return p;
 }
-
-// подставляется при публикации из секрета репозитория; в исходниках — заполнитель
-const BUILT_IN_ARBI_KEY = "__ARBISCAN_KEY__";
-function builtInKey(){
-  // защита от случая, когда страница собрана без секрета
-  return BUILT_IN_ARBI_KEY.indexOf("ARBISCAN_KEY") >= 0 ? "" : BUILT_IN_ARBI_KEY;
-}
-// личный ключ пользователя имеет приоритет над общим
-function arbiKey(){ return localStorage.getItem("arbikey") || builtInKey(); }
 
 async function arbiscanTxList(owner){
   // нативные переводы ETH не порождают событий, а внутренние возвраты из v4
