@@ -804,7 +804,8 @@ async function loadCapitalStats(detailed){
 
     // нативный ETH: только из индексатора; из RPC он принципиально не виден
     let scan = null;
-    try{ scan = await arbiscanTxList(OWNER); }catch(e){ scan = {error:"сеть"}; }
+    try{ scan = await arbiscanTxList(OWNER); }
+    catch(e){ scan = {error:"сеть недоступна"}; }
     let nativeEthIn = null, nativeDepositUsd = 0, nativeBlocks = [];
     if(scan && scan.txs){
       let gasWei = 0n, tot = 0;
@@ -857,7 +858,8 @@ async function loadCapitalStats(detailed){
     const el = document.getElementById("pDay");
     el.className = "pv";
     const ethSub = nativeEthIn===null
-      ? `<span class="warn-i">ETH не учтён — нужен ключ Arbiscan</span>`
+      ? `<span class="warn-i">ETH не учтён — ${scan && scan.error
+           ? "Arbiscan: "+scan.error : "нужен ключ Arbiscan"}</span>`
       : (nativeEthIn>0 ? " · ETH "+nativeEthIn.toFixed(6)+" ("+money(nativeDepositUsd)+
           (nativeBlocks[0]&&nativeBlocks[0].price?" по "+money(nativeBlocks[0].price):"")+")" : "");
     el.innerHTML = (depositsUsd>0 ? money(depositsUsd) : "н/д") +
