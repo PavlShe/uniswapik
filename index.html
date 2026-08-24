@@ -494,7 +494,7 @@ async function calcRecommendation(){
     body.innerHTML = '<span class="warn">Монеты должны быть разными.</span>';
     return;
   }
-  body.innerHTML = 'ищу пул и считаю оборот… <span class="spin"></span>';
+  body.innerHTML = 'ищу пул и проигрываю историю за 7 дней… <span class="spin"></span>';
   try{
     const p = await findBestPool(A, B, ver, feeSel);
     if(!p){ body.innerHTML = '<span class="warn">' + (feeSel
@@ -504,34 +504,44 @@ async function calcRecommendation(){
     if(!p.volUsd){ body.innerHTML = '<span class="warn">Пул найден, но оборот за '+
       'последние 2 часа нулевой — рассчитать доходность нельзя.</span>'; return; }
 
-    const w = widthForTargetApr(target*12, p.price, p.poolLiq, p.fee/1e6,
-      p.volUsd, portfolioCapital, p.d0, p.d1);
+    const sample = await poolSwapSample(p.pool, p.d0, p.d1, p.isV4, 7);
+    if(!sample.swaps.length){ body.innerHTML = '<span class="warn">Свопов за 7 дней '+
+      'не нашлось — историю проиграть не на чем.</span>'; return; }
+    const cap = portfolioCapital;
+    const best = widthForTargetBacktest(sample, p.price, cap, p.fee/1e6,
+      p.poolLiq, p.d0, p.d1, target);
+    if(!best){ body.innerHTML = '<span class="warn">Бэктест не сошёлся.</span>'; return; }
+    const w = best.w, r = best.r;
     const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
-    const achieved = grossAprYear(w, p.price, p.poolLiq, p.fee/1e6, p.volUsd,
-      portfolioCapital, p.d0, p.d1);
-    const unreachable = Math.abs(achieved/12 - target) > target*0.1 + 0.5;
+    const unreachable = Math.abs(best.got - target) > target*0.1 + 0.5;
     const dp = p.price < 10 ? 4 : 0;
+    const dpp = p.price < 10 ? 6 : 2;
     body.innerHTML = `
       <div class="rec-row"><div>
         <div class="rec-pair">${p.n0}/${p.n1} · ${(p.fee/1e4).toFixed(p.fee<100?4:2)}% · ${ver}</div>
         <div class="rec-range">ширина <b>${w.toFixed(1)}%</b> ·
           $${lo.toLocaleString("ru",{maximumFractionDigits:dp})} …
           $${hi.toLocaleString("ru",{maximumFractionDigits:dp})}</div>
-        <div class="rec-range">цена ${p.n0}: $${p.price.toLocaleString("ru",
-          {maximumFractionDigits: p.price<10?4:2})} · оборот ${fmtUsd(p.volUsd)}/сут
-          (${p.nswaps} свопов за 2ч) · капитал ${money(portfolioCapital)}</div>
-        ${p.notDeepest?'<div class="rec-warn">выбран тир '+(p.fee/1e4).toFixed(2)+
-          '% — у него лучше отношение комиссий к ликвидности, но он тоньше '+
-          'самого крупного тира '+(p.notDeepest.fee/1e4).toFixed(2)+'% '+
-          '('+p.nswaps+' свопов против '+p.notDeepest.nswaps+'). Выход из тонкого '+
-          'пула дороже, а оценка оборота по нему менее устойчива.</div>':''}
-        ${p.nswaps < 50 ? '<div class="rec-warn">пул почти не торгуется: всего '+
-          p.nswaps+' свопов за 2 часа. Оценка оборота по такой выборке крайне '+
-          'неустойчива, и рассчитанная ширина ненадёжна — на деле позиция в таком '+
-          'пуле может не заработать ничего.</div>' : ''}
-        ${unreachable?'<div class="rec-warn">цель недостижима при текущем обороте — '+
-          'показана ближайшая граница</div>':''}
-      </div><div class="rec-apr ${unreachable?"warn":"good"}">~${(achieved/12).toFixed(1)}%/мес</div></div>`;
+        <div class="rec-range">капитал ${money(cap)} · доля в пуле ${
+          (r.share*100).toFixed(4)}% · оборот ${fmtUsd(r.volDay)}/сут</div>
+        <div class="rec-range">за 7 дней цена шла
+          $${r.pStart.toLocaleString("ru",{maximumFractionDigits:dpp})} →
+          $${r.pEnd.toLocaleString("ru",{maximumFractionDigits:dpp})},
+          внутри диапазона прошло <b>${(r.fracVol*100).toFixed(0)}%</b> оборота</div>
+        <div class="rec-range">комиссии ${money(r.feesWindow)} за 7 дней ·
+          расхождение <b class="${r.div>=0?"ok":"bad"}">${
+            r.div>=0?"+":"−"}${money(Math.abs(r.div))}</b> ·
+          итого <b class="${r.net>=0?"ok":"bad"}">${
+            r.net>=0?"+":"−"}${money(Math.abs(r.net))}</b></div>
+        <div class="rec-range dim">выборка ${sample.chunksOk}/${sample.chunksAll} отрезков,
+          ${sample.swaps.length} свопов, покрытие ${(sample.coverage*100).toFixed(1)}% блоков</div>
+        ${r.fracVol<0.5?'<div class="rec-warn">больше половины оборота прошло мимо '+
+          'диапазона — оценка комиссий держится на узкой выборке сделок</div>':''}
+        ${r.div<-r.feesWindow?'<div class="rec-warn">расхождение съело все комиссии: '+
+          'на этой истории диапазон был убыточен против простого удержания</div>':''}
+        ${unreachable?'<div class="rec-warn">цель недостижима на истории этого пула — '+
+          'показана ближайшая достижимая граница</div>':''}
+      </div><div class="rec-apr ${unreachable?"warn":"good"}">~${best.got.toFixed(1)}%/мес</div></div>`;
   }catch(e){
     body.innerHTML = '<span class="err">Ошибка: '+String(e.message||e)+'</span>';
   }
@@ -1027,6 +1037,107 @@ async function poolVolume(pool, d0, hours=2, isV4=false){
 }
 
 
+
+// ---------- бэктест диапазона на реальной истории ----------
+// сплошная выкачка 7 дней это ~270 запросов и падающий RPC, поэтому берём
+// равномерную выборку блоков: доля оборота внутри диапазона по ней несмещённая,
+// а сам оборот масштабируется по доле покрытых блоков
+async function poolSwapSample(pool, d0, d1, isV4, days=7, nchunk=40, CH=9000){
+  const head = Number(await rpc("eth_blockNumber",[]));
+  const span = Math.floor(days*86400*RATE);
+  const from = head - span;
+  const stepB = Math.floor(span/nchunk);
+  const chunks = [];
+  for(let i=0;i<nchunk;i++){
+    const a = from + i*stepB;
+    chunks.push([a, Math.min(a+CH-1, head)]);
+  }
+  const addr   = isV4 ? V4_POOLMANAGER : pool;
+  const topics = isV4 ? [V4_SWAP_TOPIC, pool] : [SWAP_TOPIC];
+  const out = []; let ok = 0;
+  // по 6 запросов за раз: публичный RPC на пачке в 40 отдаёт 403
+  for(let i=0;i<chunks.length;i+=6){
+    const part = await Promise.all(chunks.slice(i,i+6).map(c=>
+      rpc("eth_getLogs",[{fromBlock:"0x"+c[0].toString(16),
+        toBlock:"0x"+c[1].toString(16), address:addr, topics}]).catch(()=>null)));
+    for(const logs of part){
+      if(!logs) continue;
+      ok++;
+      for(const l of logs){
+        const w = words(l.data);
+        let a = S(w[0]); if(a<0n) a=-a;
+        const sq = Number(U(w[2]))/2**96;
+        out.push({b:Number(l.blockNumber), v:Number(a)/Math.pow(10,d0),
+                  p:sq*sq*Math.pow(10,d0-d1)});
+      }
+    }
+  }
+  out.sort((x,y)=>x.b-y.b);
+  return {swaps:out, coverage: ok*CH/span, chunksOk:ok, chunksAll:chunks.length,
+          days, head};
+}
+
+function liqFor(capital, lo, hi, price, d0, d1){
+  const k = Math.pow(10,d1-d0), pr = price*k;
+  const spl = Math.sqrt(lo*k), spu = Math.sqrt(hi*k), sp = Math.sqrt(pr);
+  let den;
+  if(sp<=spl)      den = (1/spl - 1/spu)*price/Math.pow(10,d0);
+  else if(sp>=spu) den = (spu - spl)/Math.pow(10,d1);
+  else den = (1/sp - 1/spu)*price/Math.pow(10,d0) + (sp - spl)/Math.pow(10,d1);
+  return den>0 ? capital/den : 0;
+}
+function posValue(L, price, lo, hi, d0, d1){
+  const k = Math.pow(10,d1-d0), pr = price*k;
+  const spl = Math.sqrt(lo*k), spu = Math.sqrt(hi*k), sp = Math.sqrt(pr);
+  let a0,a1;
+  if(sp<=spl){ a0 = L*(1/spl-1/spu); a1 = 0; }
+  else if(sp>=spu){ a0 = 0; a1 = L*(spu-spl); }
+  else { a0 = L*(1/sp-1/spu); a1 = L*(sp-spl); }
+  return a0/Math.pow(10,d0)*price + a1/Math.pow(10,d1);
+}
+
+function backtest(sample, lo, hi, capital, feeFrac, poolLiq, d0, d1){
+  const sw = sample.swaps;
+  if(sw.length < 20) return null;
+  const pStart = sw[0].p, pEnd = sw[sw.length-1].p;
+  const L = liqFor(capital, lo, hi, pStart, d0, d1);
+  if(!(L>0)) return null;
+  const share = L/(poolLiq + L);
+  let volIn=0, volAll=0, nIn=0;
+  for(const x of sw){ const usd = x.v*x.p; volAll += usd;
+    if(x.p>=lo && x.p<=hi){ volIn += usd; nIn++; } }
+  const scale = sample.coverage>0 ? 1/sample.coverage : 1;
+  const feesWindow = volIn*scale*feeFrac*share;
+  const perDay = feesWindow/sample.days;
+  // расхождение: во что превратилось бы тело за то же окно
+  const endVal = posValue(L, pEnd, lo, hi, d0, d1);
+  const k = Math.pow(10,d1-d0), spl=Math.sqrt(lo*k), spu=Math.sqrt(hi*k), sp=Math.sqrt(pStart*k);
+  let a0,a1;
+  if(sp<=spl){ a0=L*(1/spl-1/spu); a1=0; }
+  else if(sp>=spu){ a0=0; a1=L*(spu-spl); }
+  else { a0=L*(1/sp-1/spu); a1=L*(sp-spl); }
+  const hodlEnd = a0/Math.pow(10,d0)*pEnd + a1/Math.pow(10,d1);
+  const div = endVal - hodlEnd;
+  return {feesWindow, perDay, feesMonth: perDay*30, share,
+          fracVol: volAll>0?volIn/volAll:0, fracN: sw.length?nIn/sw.length:0,
+          pStart, pEnd, div, net: div + feesWindow, hodlEnd, endVal,
+          volDay: volAll*scale/sample.days};
+}
+
+// ширина под цель ищется по ЭТОЙ ЖЕ истории, а не по мгновенному обороту
+function widthForTargetBacktest(sample, price, capital, feeFrac, poolLiq, d0, d1, targetMonthPct){
+  let loW = 0.1, hiW = 400, best = null;
+  for(let i=0;i<40;i++){
+    const w = (loW+hiW)/2;
+    const r = backtest(sample, price*(1-w/200), price*(1+w/200), capital,
+                       feeFrac, poolLiq, d0, d1);
+    if(!r){ loW = w; continue; }
+    const got = r.feesMonth/capital*100;
+    best = {w, r, got};
+    if(got > targetMonthPct) loW = w; else hiW = w;   // уже -> больше комиссий
+  }
+  return best;
+}
 
 // ---------- рендер плитки ----------
 function tileHtml(p){
