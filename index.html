@@ -79,6 +79,9 @@ td:first-child,th:first-child{text-align:left}
 .tile-apr .k{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
 .tile-apr .v{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums;margin-top:1px}
 .tile-apr .v.dim{color:var(--dim);font-weight:500;font-size:12px}
+.tile-apr .vm{font-size:10.5px;font-variant-numeric:tabular-nums;margin-top:1px}
+.tile-apr .vm.good{color:var(--good)}.tile-apr .vm.bad{color:var(--bad)}
+.tile-apr .vm.dim{color:var(--dim)}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px}
 .dot.good{background:var(--good)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
 .tile-bar{position:relative;height:6px;margin:0 14px 12px;background:var(--line);
@@ -402,8 +405,9 @@ function tileHtml(p){
           <div class="tile-fees good">+${money(p.feesUsd)}</div>
         </div>
         <div class="tile-apr" data-apr="${p.id}">
-          <div class="k">APR</div>
+          <div class="k">APR/год</div>
           <div class="v dim">…</div>
+          <div class="vm dim">…</div>
         </div>
       </div>
       <div class="chev">▾</div>
@@ -476,17 +480,21 @@ async function load(){
     const totalFeesAllTime = totalUnclaimed + totalRealized;
 
     detailed.forEach((p,i)=>{
-      const el = document.querySelector(`[data-apr="${p.id}"] .v`);
-      if(!el) return;
+      const tile = document.querySelector(`[data-apr="${p.id}"]`);
+      if(!tile) return;
+      const el = tile.querySelector(".v"), elm = tile.querySelector(".vm");
       const age = ages[i];
       const feesAll = p.feesUsd + realized[i];
       if(age===null || age<=0 || p.value<=0){
-        el.textContent = "н/д";
-        el.className = "v dim";
+        el.textContent = "н/д"; el.className = "v dim";
+        elm.textContent = ""; elm.className = "vm dim";
       } else {
         const apr = feesAll/p.value*365/age*100;
+        const aprM = apr/12;
         el.textContent = (apr>=0?"+":"")+apr.toFixed(0)+"%";
         el.className = "v " + (apr>=0?"good":"bad");
+        elm.textContent = (aprM>=0?"+":"")+aprM.toFixed(1)+"%/мес";
+        elm.className = "vm " + (aprM>=0?"good":"bad");
       }
     });
 
