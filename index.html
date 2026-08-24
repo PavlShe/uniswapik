@@ -71,9 +71,14 @@ td:first-child,th:first-child{text-align:left}
 .tile-price{font-size:13px;color:var(--dim);margin:-4px 14px 8px;
   font-variant-numeric:tabular-nums}
 .tile-price b{color:var(--ink);font-weight:650}
+.tile-stats{display:flex;align-items:center;gap:14px;flex-shrink:0}
 .tile-right{text-align:right;flex-shrink:0}
 .tile-value{font-weight:700;font-size:16px;font-variant-numeric:tabular-nums}
 .tile-fees{font-size:12px;font-variant-numeric:tabular-nums}
+.tile-apr{text-align:center;flex-shrink:0;min-width:52px}
+.tile-apr .k{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.tile-apr .v{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums;margin-top:1px}
+.tile-apr .v.dim{color:var(--dim);font-weight:500;font-size:12px}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px}
 .dot.good{background:var(--good)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
 .tile-bar{position:relative;height:6px;margin:0 14px 12px;background:var(--line);
@@ -142,7 +147,8 @@ const NPM = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
 const FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const RATE = 3.9947;
 const SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
-const COLLECT_TOPIC = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f0";
+const COLLECT_TOPIC = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01";
+const INCREASE_TOPIC = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f";
 const SEL = {slot0:"0x3850c7bd", liq:"0x1a686502", bal:"0x70a08231",
   tokenOf:"0x2f745c59", positions:"0x99fbab88", collect:"0xfc6f7865",
   getPool:"0x1698ee82", symbol:"0x95d89b41", decimals:"0x313ce567"};
@@ -309,6 +315,19 @@ async function loadPositionDetails(p, owner){
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
+async function positionAgeDays(tokenId){
+  // возраст = время с первого IncreaseLiquidity (открытие позиции)
+  const head = Number(await rpc("eth_blockNumber",[]));
+  const from = Math.max(0, head - Math.floor(400*86400*RATE));
+  try{
+    const logs = await rpc("eth_getLogs",[{fromBlock:"0x"+from.toString(16),
+      toBlock:"latest", address:NPM, topics:[INCREASE_TOPIC,"0x"+padN(tokenId)]}]);
+    if(!logs.length) return null;
+    const firstBlock = Math.min(...logs.map(l=>Number(l.blockNumber)));
+    return (head-firstBlock)/RATE/86400;
+  }catch(_){ return null; }
+}
+
 async function realizedFees(tokenId, price, d0, d1){
   // сумма всех Collect-событий по этому tokenId, оценённая по ТЕКУЩЕЙ цене
   const head = Number(await rpc("eth_blockNumber",[]));
@@ -377,9 +396,15 @@ function tileHtml(p){
         <div class="tile-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(2)}%</div>
         <div class="tile-sub"><span class="dot ${state.c}"></span>${state.t} · #${p.id}</div>
       </div>
-      <div class="tile-right">
-        <div class="tile-value">${money(p.value)}</div>
-        <div class="tile-fees good">+${money(p.feesUsd)}</div>
+      <div class="tile-stats">
+        <div class="tile-right">
+          <div class="tile-value">${money(p.value)}</div>
+          <div class="tile-fees good">+${money(p.feesUsd)}</div>
+        </div>
+        <div class="tile-apr" data-apr="${p.id}">
+          <div class="k">APR</div>
+          <div class="v dim">…</div>
+        </div>
       </div>
       <div class="chev">▾</div>
     </div>
@@ -444,10 +469,26 @@ async function load(){
 
     const totalValue = detailed.reduce((s,p)=>s+p.value,0);
     const totalUnclaimed = detailed.reduce((s,p)=>s+p.feesUsd,0);
-    const realized = await Promise.all(detailed.map(p=>
-      realizedFees(p.id, p.price, p.t0.decimals, p.t1.decimals)));
+    const [realized, ages] = await Promise.all([
+      Promise.all(detailed.map(p=>realizedFees(p.id, p.price, p.t0.decimals, p.t1.decimals))),
+      Promise.all(detailed.map(p=>positionAgeDays(p.id)))]);
     const totalRealized = realized.reduce((a,b)=>a+b,0);
     const totalFeesAllTime = totalUnclaimed + totalRealized;
+
+    detailed.forEach((p,i)=>{
+      const el = document.querySelector(`[data-apr="${p.id}"] .v`);
+      if(!el) return;
+      const age = ages[i];
+      const feesAll = p.feesUsd + realized[i];
+      if(age===null || age<0.5 || p.value<=0){
+        el.textContent = age!==null && age<0.5 ? "новая" : "н/д";
+        el.className = "v dim";
+      } else {
+        const apr = feesAll/p.value*365/age*100;
+        el.textContent = (apr>=0?"+":"")+apr.toFixed(0)+"%";
+        el.className = "v " + (apr>=0?"good":"bad");
+      }
+    });
 
     document.getElementById("summary").style.display="block";
     document.getElementById("sumValue").textContent = money(totalValue);
