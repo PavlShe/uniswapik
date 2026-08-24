@@ -1139,12 +1139,15 @@ function widthForTargetBacktest(sample, price, capital, feeFrac, poolLiq, d0, d1
   // на начало окна. Полоса вокруг сегодняшней цены неделю назад не существовала
   // бы вовсе, и бэктест давал бы ноль на любой растущей паре.
   const anchor = sample.swaps.length ? sample.swaps[0].p : price;
-  let loW = 0.1, hiW = 400, best = null;
+  // потолок строго ниже 200%: при 200% нижняя граница обращается в ноль,
+  // а выше — становится отрицательной, и корень из неё даёт NaN
+  let loW = 0.1, hiW = 190, best = null;
   for(let i=0;i<40;i++){
     const w = (loW+hiW)/2;
     const r = backtest(sample, anchor*(1-w/200), anchor*(1+w/200), capital,
                        feeFrac, poolLiq, d0, d1);
-    if(!r){ loW = w; continue; }
+    // негодная ширина — сужаем, а не расширяем: иначе поиск уходит вверх и гибнет
+    if(!r){ hiW = w; continue; }
     const got = r.feesMonth/capital*100;
     best = {w, r, got};
     if(got > targetMonthPct) loW = w; else hiW = w;   // уже -> больше комиссий
