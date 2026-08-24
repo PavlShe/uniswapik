@@ -507,10 +507,11 @@ async function calcRecommendation(){
     const sample = await poolSwapSample(p.pool, p.d0, p.d1, p.isV4, 7);
     if(!sample.swaps.length){ body.innerHTML = '<span class="warn">Свопов за 7 дней '+
       'не нашлось — историю проиграть не на чем.</span>'; return; }
-    const cap = portfolioCapital;
+    const cap = portfolioCapital > 0 ? portfolioCapital : 1000;
     const best = widthForTargetBacktest(sample, p.price, cap, p.fee/1e6,
       p.poolLiq, p.d0, p.d1, target);
-    if(!best){ body.innerHTML = '<span class="warn">Бэктест не сошёлся.</span>'; return; }
+    if(!best){ body.innerHTML = '<span class="warn">Бэктест не сошёлся: за 7 дней '+
+      'не набралось сделок для оценки.</span>'; return; }
     const w = best.w, r = best.r;
     const lo = p.price*(1-w/200), hi = p.price*(1+w/200);
     const unreachable = Math.abs(best.got - target) > target*0.1 + 0.5;
@@ -524,10 +525,11 @@ async function calcRecommendation(){
           $${hi.toLocaleString("ru",{maximumFractionDigits:dp})}</div>
         <div class="rec-range">капитал ${money(cap)} · доля в пуле ${
           (r.share*100).toFixed(4)}% · оборот ${fmtUsd(r.volDay)}/сут</div>
-        <div class="rec-range">за 7 дней цена шла
+        <div class="rec-range">проверка на истории: за 7 дней цена шла
           $${r.pStart.toLocaleString("ru",{maximumFractionDigits:dpp})} →
-          $${r.pEnd.toLocaleString("ru",{maximumFractionDigits:dpp})},
-          внутри диапазона прошло <b>${(r.fracVol*100).toFixed(0)}%</b> оборота</div>
+          $${r.pEnd.toLocaleString("ru",{maximumFractionDigits:dpp})}; диапазон
+          такой же ширины вокруг цены на начало окна поймал
+          <b>${(r.fracVol*100).toFixed(0)}%</b> оборота</div>
         <div class="rec-range">комиссии ${money(r.feesWindow)} за 7 дней ·
           расхождение <b class="${r.div>=0?"ok":"bad"}">${
             r.div>=0?"+":"−"}${money(Math.abs(r.div))}</b> ·
@@ -1056,10 +1058,17 @@ async function poolSwapSample(pool, d0, d1, isV4, days=7, nchunk=40, CH=9000){
   const topics = isV4 ? [V4_SWAP_TOPIC, pool] : [SWAP_TOPIC];
   const out = []; let ok = 0;
   // по 6 запросов за раз: публичный RPC на пачке в 40 отдаёт 403
+  const fetch1 = c => rpc("eth_getLogs",[{fromBlock:"0x"+c[0].toString(16),
+        toBlock:"0x"+c[1].toString(16), address:addr, topics}]).catch(()=>null);
   for(let i=0;i<chunks.length;i+=6){
-    const part = await Promise.all(chunks.slice(i,i+6).map(c=>
-      rpc("eth_getLogs",[{fromBlock:"0x"+c[0].toString(16),
-        toBlock:"0x"+c[1].toString(16), address:addr, topics}]).catch(()=>null)));
+    const batch = chunks.slice(i,i+6);
+    let part = await Promise.all(batch.map(fetch1));
+    // публичный RPC роняет примерно половину пачки; один повтор поднимает покрытие вдвое
+    const retry = part.map((r,j)=>r?null:batch[j]).filter(Boolean);
+    if(retry.length){
+      const again = await Promise.all(retry.map(fetch1));
+      let k=0; part = part.map(r=>r?r:again[k++]);
+    }
     for(const logs of part){
       if(!logs) continue;
       ok++;
@@ -1126,10 +1135,14 @@ function backtest(sample, lo, hi, capital, feeFrac, poolLiq, d0, d1){
 
 // ширина под цель ищется по ЭТОЙ ЖЕ истории, а не по мгновенному обороту
 function widthForTargetBacktest(sample, price, capital, feeFrac, poolLiq, d0, d1, targetMonthPct){
+  // проверяется ШИРИНА, а не конкретная полоса: диапазон строится вокруг цены
+  // на начало окна. Полоса вокруг сегодняшней цены неделю назад не существовала
+  // бы вовсе, и бэктест давал бы ноль на любой растущей паре.
+  const anchor = sample.swaps.length ? sample.swaps[0].p : price;
   let loW = 0.1, hiW = 400, best = null;
   for(let i=0;i<40;i++){
     const w = (loW+hiW)/2;
-    const r = backtest(sample, price*(1-w/200), price*(1+w/200), capital,
+    const r = backtest(sample, anchor*(1-w/200), anchor*(1+w/200), capital,
                        feeFrac, poolLiq, d0, d1);
     if(!r){ loW = w; continue; }
     const got = r.feesMonth/capital*100;
