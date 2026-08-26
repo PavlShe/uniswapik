@@ -67,6 +67,7 @@ td:first-child,th:first-child{text-align:left}
 .tile-left{display:flex;flex-direction:column;gap:2px;min-width:0}
 .tile-pair{font-weight:650;font-size:14.5px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
+.own{background:var(--line);border-radius:4px;padding:1px 4px;font-size:10px}
 .tile-sub{font-size:12px;color:var(--dim)}
 .il{font-weight:600}
 .tile-price{font-size:13px;color:var(--dim);margin:-4px 14px 8px;
@@ -83,7 +84,8 @@ td:first-child,th:first-child{text-align:left}
   .tile-col,.tile-apr{text-align:left}
   .tile-apr{min-width:0}
   .tile-stats>*:last-child{text-align:right}
-  .tile-sub{white-space:normal}
+  .own{background:var(--line);border-radius:4px;padding:1px 4px;font-size:10px}
+.tile-sub{white-space:normal}
 }
 .tile-col{text-align:center;flex-shrink:0}
 .tile-apr{text-align:center;flex-shrink:0;min-width:52px}
@@ -141,7 +143,7 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
     <div class="lbl">Кошелёк</div>
     <p class="note">Укажите адрес в сети Arbitrum. Приложение только читает
       блокчейн — приватный ключ не нужен.</p>
-    <input id="addrIn" type="text" placeholder="0x…" autocomplete="off" spellcheck="false"
+    <input id="addrIn" type="text" placeholder="0x… (несколько — через запятую)" autocomplete="off" spellcheck="false"
       style="margin:8px 0">
     <div id="addrErr" class="err" style="margin-bottom:8px"></div>
     <button id="addrSave">Сохранить</button>
@@ -424,8 +426,15 @@ if (tg){ tg.ready(); tg.expand();
 else if (matchMedia("(prefers-color-scheme:dark)").matches)
   document.body.classList.add("tg-dark");
 
-let OWNER = new URLSearchParams(location.search).get("a") || localStorage.getItem("owner") || "";
 const RE = /^0x[0-9a-fA-F]{40}$/;
+// несколько кошельков: OWNERS — все, OWNER — тот, по которому идёт текущий
+// проход. Так функции, принимающие один адрес, остаются без изменений.
+function parseOwners(v){
+  return String(v||"").split(/[\s,;]+/).map(x=>x.trim()).filter(x=>RE.test(x));
+}
+let OWNERS = parseOwners(new URLSearchParams(location.search).get("a")
+  || localStorage.getItem("owners") || localStorage.getItem("owner") || "");
+let OWNER = OWNERS[0] || "";
 let portfolioCapital = 500;   // для расчёта доли в пуле; уточняется из активов
 
 const COIN_V3 = {ETH:"0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
@@ -621,16 +630,17 @@ function showSetup(on){
 }
 document.getElementById("addrSave").onclick = () => {
   const v=document.getElementById("addrIn").value.trim();
-  if(!RE.test(v)){ document.getElementById("addrErr").textContent =
-    "Адрес должен начинаться с 0x и содержать 40 символов"; return; }
-  localStorage.setItem("owner", v); OWNER = v;
+  const list = parseOwners(v);
+  if(!list.length){ document.getElementById("addrErr").textContent =
+    "Адрес должен начинаться с 0x и содержать 40 символов. Несколько — через запятую"; return; }
+  localStorage.setItem("owners", list.join(",")); OWNERS = list; OWNER = list[0];
   document.getElementById("addrErr").textContent = "";
   showSetup(false); load();
 };
 document.getElementById("addrIn").addEventListener("keydown", e=>{
   if(e.key==="Enter") document.getElementById("addrSave").click(); });
 document.getElementById("changeAddr").onclick = () => {
-  document.getElementById("addrIn").value = OWNER || "";
+  document.getElementById("addrIn").value = OWNERS.join(", ");
   showSetup(true);
 };
 document.getElementById("refresh").onclick = load;
@@ -1112,30 +1122,42 @@ function walletTokenSet(detailed, ethPrice){
 
 async function loadCapitalStats(detailed){
   try{
-    const [s0, nativeBal, nonce, depW, depU, depC] = await Promise.all([
-      call(WETH_USDT_POOL, SEL.slot0),
-      rpc("eth_getBalance",[OWNER,"latest"]),
-      rpc("eth_getTransactionCount",[OWNER,"latest"]),
-      scanIncomingTransfers(WETH_ADDR, 18, OWNER),
-      scanIncomingTransfers(USDT_ADDR, 6, OWNER),
-      scanIncomingTransfers(COIN_V3.USDC, 6, OWNER),
-    ]);
+    const s0 = await call(WETH_USDT_POOL, SEL.slot0);
     const w0 = words(s0);
     const sq = Number(U(w0[0]))/2**96;
     const price = sq*sq*1e12;   // WETH(18) / USDT(6)
 
+    // всё, что зависит от адреса, считается по каждому кошельку и складывается
     const toks = walletTokenSet(detailed, price);
-    const rawBals = await Promise.all(toks.map(t =>
-      call(t.addr, SEL.bal+pad(OWNER)).catch(()=>null)));
-    let walletUsd = 0;
-    toks.forEach((t,i) => {
-      const r = rawBals[i];
-      if(!r || r === "0x") return;
-      const amt = Number(U(words(r)[0]))/Math.pow(10, t.dec);
-      if(amt > 0) walletUsd += amt * (t.usd || 0);
-    });
-    const nativeEth = Number(BigInt(nativeBal))/1e18;
-    const txCount = Number(BigInt(nonce));
+    let walletUsd = 0, nativeEth = 0, txCount = 0;
+    const depW = {total:0, earliestBlock:null, items:[]};
+    const depU = {total:0, earliestBlock:null, items:[]};
+    const depC = {total:0, earliestBlock:null, items:[]};
+    const merge = (dst, src) => {
+      dst.total += src.total;
+      if(src.items) dst.items.push(...src.items);
+      if(src.earliestBlock!==null && (dst.earliestBlock===null
+          || src.earliestBlock<dst.earliestBlock)) dst.earliestBlock = src.earliestBlock;
+    };
+    for(const own of OWNERS){
+      const [nb, nc, dw, du, dc, ...bals] = await Promise.all([
+        rpc("eth_getBalance",[own,"latest"]),
+        rpc("eth_getTransactionCount",[own,"latest"]),
+        scanIncomingTransfers(WETH_ADDR, 18, own),
+        scanIncomingTransfers(USDT_ADDR, 6, own),
+        scanIncomingTransfers(COIN_V3.USDC, 6, own),
+        ...toks.map(t => call(t.addr, SEL.bal+pad(own)).catch(()=>null)),
+      ]);
+      nativeEth += Number(BigInt(nb))/1e18;
+      txCount += Number(BigInt(nc));
+      merge(depW, dw); merge(depU, du); merge(depC, dc);
+      toks.forEach((t,i) => {
+        const r = bals[i];
+        if(!r || r === "0x") return;
+        const amt = Number(U(words(r)[0]))/Math.pow(10, t.dec);
+        if(amt > 0) walletUsd += amt * (t.usd || 0);
+      });
+    }
     const poolValue = (detailed||[]).reduce((s,p)=>s+p.value,0);
 
     const assetsNow = walletUsd + nativeEth*price + poolValue;
@@ -1148,23 +1170,31 @@ async function loadCapitalStats(detailed){
 
     // нативный ETH: только из индексатора; из RPC он принципиально не виден
     let scan = null;
-    try{ scan = await arbiscanTxList(OWNER); }
-    catch(e){ scan = {error:"сеть недоступна"}; }
+    const scans = [];
+    for(const own of OWNERS){
+      try{ scans.push([own, await arbiscanTxList(own)]); }
+      catch(e){ scans.push([own, {error:"сеть недоступна"}]); }
+    }
+    scan = (scans.find(([,r])=>r && r.txs) || scans[0] || [null,null])[1];
     let nativeEthIn = null, nativeDepositUsd = 0, nativeBlocks = [];
-    if(scan && scan.txs){
-      let gasWei = 0n, tot = 0;
-      for(const t of scan.txs){
-        if(t.from && t.from.toLowerCase()===OWNER.toLowerCase())
-          gasWei += BigInt(t.gasUsed)*BigInt(t.gasPrice);
-        if(t.to && t.to.toLowerCase()===OWNER.toLowerCase() &&
-           t.value!=="0" && t.isError==="0"){
-          const eth = Number(BigInt(t.value))/1e18;
-          tot += eth; nativeBlocks.push({eth, block: Number(t.blockNumber)});
+    if(scans.some(([,r])=>r && r.txs)){
+      let gasWei = 0n, tot = 0, ntx = 0;
+      for(const [own, r] of scans){
+        if(!r || !r.txs) continue;
+        const lo = own.toLowerCase();
+        for(const t of r.txs){
+          if(t.from && t.from.toLowerCase()===lo){
+            gasWei += BigInt(t.gasUsed)*BigInt(t.gasPrice); ntx++;
+          }
+          if(t.to && t.to.toLowerCase()===lo && t.value!=="0" && t.isError==="0"){
+            const eth = Number(BigInt(t.value))/1e18;
+            tot += eth; nativeBlocks.push({eth, block: Number(t.blockNumber)});
+          }
         }
       }
       nativeEthIn = tot;
       gasEstUsd = Number(gasWei)/1e18*price; gasExact = true;
-      gasTxs = scan.txs.filter(t=>t.from && t.from.toLowerCase()===OWNER.toLowerCase()).length;
+      gasTxs = ntx;
       // каждое пополнение оценивается по курсу НА МОМЕНТ ПРИХОДА
       const px = await Promise.all(nativeBlocks.map(b=>priceAtBlock(b.block)));
       nativeBlocks.forEach((b,i)=>{ b.price = px[i] || price;
@@ -1278,7 +1308,7 @@ async function renderClosed(all){
     // v4 сюда не попадает: потоки читаются из менеджера v3
     for(const c of all.filter(x=>!x.isV4).slice(0, 12)){
       try{
-        const det = await loadPositionDetails(c, OWNER);
+        const det = await loadPositionDetails(c, c.owner||OWNER);
         const f = await positionFlows(det.id, det.t0.decimals, det.t1.decimals);
         if(!f || f.lastBlock < since) continue;
         rows.push({det, f, days:(head-f.lastBlock)/RATE/86400});
@@ -1512,7 +1542,8 @@ function tileHtml(p){
     <div class="tile-head">
       <div class="tile-left">
         <div class="tile-pair">${p.t0.symbol}/${p.t1.symbol} · ${(p.fee/1e4).toFixed(p.fee<100?4:2)}%${p.isV4?" · v4":""}</div>
-        <div class="tile-sub"><span class="dot ${state.c}"></span>${state.t} · #${p.id}</div>
+        <div class="tile-sub"><span class="dot ${state.c}"></span>${state.t} · #${p.id}${
+          OWNERS.length>1 && p.owner ? ' · <span class="own">'+p.owner.slice(0,6)+"…"+p.owner.slice(-4)+"</span>" : ""}</div>
       </div>
       <div class="tile-stats">
         <div class="tile-col">
@@ -1623,7 +1654,7 @@ function bindTile(el, p){
         add.className = "proj-extra";
         add.innerHTML = `
           <div>в диапазоне <b>${r.inRangePct.toFixed(0)}%</b> времени ·
-            волатильность ${(r.sigma*100).toFixed(0)}%/год</div>
+            волатильность ${(r.sigma*100).toFixed(0)}%/год по 7 дням</div>
           <div>уйдёт ниже диапазона <b>${r.pLo.toFixed(0)}%</b>${
             p.t0 && STABLES.has((p.t1.symbol||"").toUpperCase())
               ? " (выкуп "+p.t0.symbol+")" : ""} ·
@@ -1639,19 +1670,29 @@ function bindTile(el, p){
 }
 
 async function load(){
-  document.getElementById("addr").textContent = OWNER.slice(0,10)+"…"+OWNER.slice(-6);
+  document.getElementById("addr").textContent = OWNERS.length > 1
+    ? `${OWNERS.length} кошелька: ` + OWNERS.map(o=>o.slice(0,6)+"…"+o.slice(-4)).join(", ")
+    : OWNER.slice(0,10)+"…"+OWNER.slice(-6);
   document.getElementById("head").style.display="block";
   document.getElementById("loading").innerHTML = 'загрузка позиций <span class="spin"></span>';
   document.getElementById("refresh").disabled = true;
   const tilesEl = document.getElementById("tiles"); tilesEl.innerHTML="";
   try{
-    const [basics, v4basics] = await Promise.all([
-      discoverPositions(OWNER), discoverV4Positions(OWNER)]);
+    const basics = [], v4basics = [];
+    basics.closedPositions = []; v4basics.closedPositions = [];
+    for(const own of OWNERS){
+      const [b3, b4] = await Promise.all([
+        discoverPositions(own), discoverV4Positions(own)]);
+      for(const x of b3){ x.owner = own; basics.push(x); }
+      for(const x of b4){ x.owner = own; v4basics.push(x); }
+      for(const x of (b3.closedPositions||[])){ x.owner = own; basics.closedPositions.push(x); }
+      for(const x of (b4.closedPositions||[])){ x.owner = own; v4basics.closedPositions.push(x); }
+    }
     document.getElementById("loading").textContent =
       `найдено позиций: v3 ${basics.length}, v4 ${v4basics.length}`;
     const detailed = (await Promise.all([
-      ...basics.map(p=>loadPositionDetails(p, OWNER).catch(()=>null)),
-      ...v4basics.map(p=>loadV4Details(p, OWNER).catch(()=>null))])).filter(Boolean);
+      ...basics.map(p=>loadPositionDetails(p, p.owner||OWNER).catch(()=>null)),
+      ...v4basics.map(p=>loadV4Details(p, p.owner||OWNER).catch(()=>null))])).filter(Boolean);
     detailed.sort((a,b)=>b.value-a.value);
 
     if(!detailed.length){
@@ -1661,8 +1702,8 @@ async function load(){
         allClosed.sort((a,b)=> a.id < b.id ? 1 : a.id > b.id ? -1 : 0);   // BigInt-safe
         const last = allClosed[0];
         try{
-          const det = last.isV4 ? await loadV4Details(last, OWNER)
-                                : await loadPositionDetails(last, OWNER);
+          const det = last.isV4 ? await loadV4Details(last, last.owner||OWNER)
+                                : await loadPositionDetails(last, last.owner||OWNER);
           const collected = det.isV4 ? null
             : await realizedFees(det.id, det.price, det.t0.decimals, det.t1.decimals);
           tilesEl.innerHTML = `<div class="card">
@@ -1719,7 +1760,7 @@ async function load(){
   }
 }
 
-if (OWNER && RE.test(OWNER)) { showSetup(false); load(); } else { showSetup(true); }
+if (OWNERS.length) { showSetup(false); load(); } else { showSetup(true); }
 </script>
 </body>
 </html>
