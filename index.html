@@ -636,6 +636,14 @@ async function discoverV4Positions(owner){
       address: V4PM, topics:[TRANSFER_TOPIC, null, "0x"+pad(owner)]}]);
   }catch(e){ return []; }
   const ids = [...new Set(logs.map(l=>U(l.topics[3].replace(/^0x/,"")).toString()))];
+  // блок выпуска: без него запрос ModifyLiquidity по всей истории пула
+  // упирается в лимит в 10 000 логов
+  const mintBlock = new Map();
+  for(const l of logs){
+    const k = U(l.topics[3].replace(/^0x/,"")).toString();
+    const b = Number(l.blockNumber);
+    if(!mintBlock.has(k) || b < mintBlock.get(k)) mintBlock.set(k, b);
+  }
   const out = [], closed4 = [];
   await Promise.all(ids.map(async idStr=>{
     const id = BigInt(idStr);
@@ -653,6 +661,7 @@ async function discoverV4Positions(owner){
       const tu = Number(S24((info>>32n) & 0xFFFFFFn));
       const poolId = "0x"+keccak256Hex(w.slice(0,5).join(""));
       (L===0 ? closed4 : out).push({id, isV4:true, poolId, pool:poolId,
+        mintBlock: mintBlock.get(idStr) || 0,
         token0:"0x"+w[0].slice(24), token1:"0x"+w[1].slice(24),
         fee:Number(U(w[2])), tickSpacing:Number(S24(U(w[3]) & 0xFFFFFFn)),
         hooks:"0x"+w[4].slice(24), tl, tu, L});
@@ -704,7 +713,8 @@ async function loadV4Details(p, owner){
             div:null, roi:null, apr:null, twab:null, ageDays:null, feePerDay:null,
             usdBase:null, pnlUsd:null, roiUsd:null};
   try{
-    const f = await v4Flows(p.poolId, p.id, p.tl, p.tu, t0.decimals, t1.decimals);
+    const f = await v4Flows(p.poolId, p.id, p.tl, p.tu, t0.decimals, t1.decimals,
+                            p.mintBlock);
     if(f){
       const head = Number(await rpc("eth_blockNumber",[]));
       m4.dep = {a0:f.dep0, a1:f.dep1};
@@ -951,12 +961,27 @@ async function priceAtBlockV4(block, poolId, dec0, dec1){
 
 // внесения и изъятия в v4: событие несёт изменение ликвидности, а не суммы
 // токенов, поэтому количества восстанавливаем по цене на момент события
-async function v4Flows(poolId, tokenId, tl, tu, d0, d1){
+async function v4Flows(poolId, tokenId, tl, tu, d0, d1, fromBlock){
+  const head = Number(await rpc("eth_blockNumber",[]));
+  const start = Math.max(0, (fromBlock || 0) - 10);
+  // пул активный: даже с ограниченного диапазона логов может быть за лимит,
+  // поэтому при переполнении делим отрезок пополам
+  async function fetchRange(a, b, depth=0){
+    try{
+      return await rpc("eth_getLogs",[{fromBlock:"0x"+a.toString(16),
+        toBlock:"0x"+b.toString(16), address: V4_POOLMANAGER,
+        topics:[V4_MODLIQ_TOPIC, poolId]}]);
+    }catch(e){
+      if(depth > 8 || b - a < 200) return [];
+      const mid = Math.floor((a+b)/2);
+      const [x,y] = await Promise.all([fetchRange(a, mid, depth+1),
+                                       fetchRange(mid+1, b, depth+1)]);
+      return [...x, ...y];
+    }
+  }
   let logs;
-  try{
-    logs = await rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
-      address: V4_POOLMANAGER, topics:[V4_MODLIQ_TOPIC, poolId]}]);
-  }catch(e){ return null; }
+  try{ logs = await fetchRange(start, head); }
+  catch(e){ return null; }
   const salt = padN(tokenId);
   const mine = logs.filter(l => words(l.data)[3] === salt);
   if(!mine.length) return null;
