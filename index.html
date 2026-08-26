@@ -241,7 +241,12 @@ function builtInKey(){
 function arbiKey(){ return localStorage.getItem("arbikey") || builtInKey(); }
 const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 const SEL4 = {ppi:"0x7ba03aad", posLiq:"0x1efeed33", ownerOf:"0x6352211e",
-              slot0:"0xc815641c", liq:"0xfa6793d5"};
+              slot0:"0xc815641c", liq:"0xfa6793d5",
+              feeGrowth:"0x53e9c1fb",   // getFeeGrowthInside(bytes32,int24,int24)
+              posInfo:"0x97fd7b42"};    // getPositionInfo(bytes32,bytes32)
+const M256 = (1n<<256n) - 1n;
+// ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)
+const V4_MODLIQ_TOPIC = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec";
 const SEL = {slot0:"0x3850c7bd", liq:"0x1a686502", bal:"0x70a08231",
   tokenOf:"0x2f745c59", positions:"0x99fbab88", collect:"0xfc6f7865",
   getPool:"0x1698ee82", symbol:"0x95d89b41", decimals:"0x313ce567"};
@@ -670,12 +675,55 @@ async function loadV4Details(p, owner){
   const [e,u] = amounts(p.L, price, p.tl, p.tu, t0.decimals, t1.decimals);
   const value = e*price + u;
   const inRange = tick>=p.tl && tick<=p.tu;
-  // несобранные комиссии в v4 требуют математики feeGrowthInside — честно помечаем как неизвестные
+  // в v4 нет статического collect, как в v3: несобранные комиссии считаем
+  // напрямую по росту комиссий внутри диапазона
+  let feeE = 0, feeU = 0, feesUsd = 0, feesUnknown = true;
+  try{
+    const w256 = v => ((BigInt(v) & M256).toString(16)).padStart(64,"0");
+    const i24 = v => ((BigInt(v) & 0xFFFFFFn).toString(16)).padStart(6,"0");
+    const pid = p.poolId.replace(/^0x/,"");
+    // ключ позиции: keccak(менеджер ‖ tickLower ‖ tickUpper ‖ salt), плотная упаковка
+    const key = keccak256Hex(V4PM.replace(/^0x/,"").toLowerCase() +
+      i24(p.tl) + i24(p.tu) + padN(p.id));
+    const [fg, pi] = await Promise.all([
+      call(STATEVIEW, SEL4.feeGrowth + pid + w256(p.tl) + w256(p.tu)),
+      call(STATEVIEW, SEL4.posInfo + pid + key)]);
+    if(fg && pi){
+      const fw = words(fg), pw = words(pi);
+      const L = U(pw[0]), Q = 1n<<128n;
+      // разности берём по модулю 2^256: счётчики роста комиссий переполняются
+      const d0 = (U(fw[0]) - U(pw[1])) & M256;
+      const d1 = (U(fw[1]) - U(pw[2])) & M256;
+      feeE = Number(L*d0/Q)/Math.pow(10,t0.decimals);
+      feeU = Number(L*d1/Q)/Math.pow(10,t1.decimals);
+      feesUsd = feeE*price + feeU;
+      feesUnknown = false;
+    }
+  }catch(_){}
+  let m4 = {dep:null, hodl:null, il:null, ilPct:null, earned:feesUnknown?null:feesUsd,
+            div:null, roi:null, apr:null, twab:null, ageDays:null, feePerDay:null,
+            usdBase:null, pnlUsd:null, roiUsd:null};
+  try{
+    const f = await v4Flows(p.poolId, p.id, p.tl, p.tu, t0.decimals, t1.decimals);
+    if(f){
+      const head = Number(await rpc("eth_blockNumber",[]));
+      m4.dep = {a0:f.dep0, a1:f.dep1};
+      m4.hodl = f.dep0*price + f.dep1;
+      const withdrawn = f.wd0*price + f.wd1;
+      m4.earned = feesUnknown ? null : feesUsd;   // снятых комиссий в v4 пока не видим
+      const total = value + withdrawn + (m4.earned || 0);
+      if(m4.hodl > 0){ m4.il = total - m4.hodl; m4.ilPct = m4.il/m4.hodl*100; }
+      if(m4.il !== null && m4.earned !== null) m4.div = m4.il - m4.earned;
+      m4.ageDays = (head - f.firstBlock)/RATE/86400;
+      m4.twab = m4.hodl;                          // довнесений в этой позиции нет
+      const years = m4.ageDays/365;
+      if(m4.twab>0 && years>0 && m4.il!==null) m4.apr = m4.il/m4.twab/years*100;
+      if(m4.hodl>0 && m4.il!==null) m4.roi = m4.il/m4.hodl*100;
+      if(m4.ageDays>0 && m4.earned!==null) m4.feePerDay = m4.earned/m4.ageDays;
+    }
+  }catch(_){}
   return {...p, t0, t1, price, tick, poolLiq, e, u, value,
-    feeE:0, feeU:0, feesUsd:0, feesUnknown:true, inRange,
-    dep:null, hodl:null, il:null, ilPct:null, earned:null, div:null,
-    roi:null, apr:null, twab:null, ageDays:null, feePerDay:null,
-    usdBase:null, pnlUsd:null, roiUsd:null,
+    feeE, feeU, feesUsd, feesUnknown, inRange, ...m4,
     lo: t2p(p.tl,t0.decimals,t1.decimals), hi: t2p(p.tu,t0.decimals,t1.decimals)};
 }
 
@@ -874,6 +922,60 @@ async function exactLpGasUsd(priceEth){
 }
 
 const priceCache = new Map();
+async function priceAtBlockV4(block, poolId, dec0, dec1){
+  const scale = Math.pow(10, dec0 - dec1);
+  const ck = "v4:"+poolId+":"+block;
+  if(priceCache.has(ck)) return priceCache.get(ck);
+  const pr = (async()=>{
+    for(const win of [900, 8000, 60000]){
+      try{
+        const logs = await rpc("eth_getLogs",[{
+          fromBlock:"0x"+Math.max(0,block-win).toString(16),
+          toBlock:"0x"+(block+win).toString(16),
+          address: V4_POOLMANAGER, topics:[V4_SWAP_TOPIC, poolId]}]);
+        if(!logs.length) continue;
+        let best=null, bd=null;
+        for(const l of logs){
+          const d = Math.abs(Number(l.blockNumber)-block);
+          if(bd===null || d<bd){ bd=d; best=l; }
+        }
+        const sq = Number(U(words(best.data)[2]))/2**96;
+        return sq*sq*scale;
+      }catch(e){}
+    }
+    return null;
+  })();
+  priceCache.set(ck, pr);
+  return pr;
+}
+
+// внесения и изъятия в v4: событие несёт изменение ликвидности, а не суммы
+// токенов, поэтому количества восстанавливаем по цене на момент события
+async function v4Flows(poolId, tokenId, tl, tu, d0, d1){
+  let logs;
+  try{
+    logs = await rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
+      address: V4_POOLMANAGER, topics:[V4_MODLIQ_TOPIC, poolId]}]);
+  }catch(e){ return null; }
+  const salt = padN(tokenId);
+  const mine = logs.filter(l => words(l.data)[3] === salt);
+  if(!mine.length) return null;
+  const px = await Promise.all(mine.map(l =>
+    priceAtBlockV4(Number(l.blockNumber), poolId, d0, d1)));
+  let dep0=0, dep1=0, wd0=0, wd1=0;
+  mine.forEach((l,i) => {
+    const delta = S(words(l.data)[2]);
+    const pr = px[i];
+    if(!pr || delta === 0n) return;
+    const L = Number(delta < 0n ? -delta : delta);
+    const [a0, a1] = amounts(L, pr, tl, tu, d0, d1);
+    if(delta > 0n){ dep0 += a0; dep1 += a1; } else { wd0 += a0; wd1 += a1; }
+  });
+  return {dep0, dep1, wd0, wd1,
+          firstBlock: Math.min(...mine.map(l=>Number(l.blockNumber))),
+          lastBlock:  Math.max(...mine.map(l=>Number(l.blockNumber)))};
+}
+
 async function priceAtBlock(block, pool, dec0, dec1){
   pool = pool || WETH_USDT_POOL; 
   const scale = Math.pow(10, (dec0===undefined?18:dec0) - (dec1===undefined?6:dec1));
