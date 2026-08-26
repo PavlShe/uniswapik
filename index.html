@@ -239,12 +239,6 @@ function builtInKey(){
 }
 // личный ключ пользователя имеет приоритет над общим
 function arbiKey(){ return localStorage.getItem("arbikey") || builtInKey(); }
-// всё, что приходит от этих контрактов, — возврат собственных средств, а не пополнение
-const PROTOCOL_ADDRS = new Set([
-  "0xc36442b4a4522e871399cd717abdd847ab11fe88",   // NonfungiblePositionManager v3
-  "0xd88f38f930b7952f2db2432cb002e7abbf3dd869",   // PositionManager v4
-  "0x360e68faccca8ca495c1b759fd9eee466db9fb32",   // PoolManager v4
-]);
 const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 const SEL4 = {ppi:"0x7ba03aad", posLiq:"0x1efeed33", ownerOf:"0x6352211e",
               slot0:"0xc815641c", liq:"0xfa6793d5"};
@@ -797,11 +791,21 @@ async function scanIncomingTransfers(tokenAddr, decimals, owner){
   try{
     const logs = await rpc("eth_getLogs",[{fromBlock:"0x0", toBlock:"latest",
       address: tokenAddr, topics:[TRANSFER_TOPIC, null, "0x"+pad(owner)]}]);
+    // Пополнение — это перевод от КОШЕЛЬКА. Всё, что присылают контракты, —
+    // возвраты из менеджеров позиций и выдача при свопах из самих пулов;
+    // ручной чёрный список это не ловил, и каждый обмен добавлял фантомный
+    // депозит. Оборотная сторона: если биржа выводит со смарт-контрактного
+    // кошелька, такое пополнение не будет засчитано.
+    const senders = [...new Set(logs.map(l => ("0x"+l.topics[1].slice(26)).toLowerCase()))];
+    const codes = await Promise.all(senders.map(a =>
+      rpc("eth_getCode",[a,"latest"]).catch(()=>"0x")));
+    const isEOA = new Map(senders.map((a,i) => [a, !codes[i] || codes[i] === "0x"]));
+
     let total = 0, earliestBlock = null;
     const items = [];
     for(const l of logs){
-      const sender = "0x"+l.topics[1].slice(26);
-      if(PROTOCOL_ADDRS.has(sender.toLowerCase())) continue;   // возврат из пула — не депозит
+      const sender = ("0x"+l.topics[1].slice(26)).toLowerCase();
+      if(!isEOA.get(sender)) continue;
       const amt = Number(U(words(l.data)[0])) / Math.pow(10, decimals);
       const bn = Number(l.blockNumber);
       total += amt;
