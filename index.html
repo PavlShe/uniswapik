@@ -110,6 +110,15 @@ td:first-child,th:first-child{text-align:left}
 .rec-row:last-child{border-bottom:none}
 .rec-pair{font-weight:650;font-size:14px}
 .rec-range{font-size:12.5px;color:var(--dim);margin-top:2px}
+.proj-extra{font-size:11px;color:var(--dim);line-height:1.5;padding:2px 0 4px}
+.proj-extra b{color:var(--ink)}
+.wtab{width:100%;border-collapse:collapse;margin:8px 0 2px;font-size:11px}
+.wtab th{font-weight:600;color:var(--dim);text-align:right;padding:3px 4px;font-size:9.5px;
+  text-transform:uppercase;letter-spacing:.04em;line-height:1.15}
+.wtab th:first-child,.wtab td:first-child{text-align:left}
+.wtab td{text-align:right;padding:3px 4px;font-variant-numeric:tabular-nums;
+  border-top:1px solid var(--line)}
+.wtab .ok{color:var(--good)}.wtab .bad{color:var(--bad)}
 .rec-apr-sub{font-size:9px;font-weight:500;opacity:.7;margin-top:2px}
 .rec-apr{font-weight:700;font-size:14px;text-align:right;flex-shrink:0;
   white-space:nowrap}
@@ -569,6 +578,25 @@ async function calcRecommendation(){
           'диапазона — оценка комиссий держится на узкой выборке сделок</div>':''}
         ${r.div<-r.feesWindow?'<div class="rec-warn">расхождение съело все комиссии: '+
           'на этой истории диапазон был убыточен против простого удержания</div>':''}
+        ${(()=>{
+          const anchor = sample.swaps[0].p;
+          const rows = [1,2,3,5,10,20,50].map(ww=>{
+            const rr = backtest(sample, anchor*(1-ww/200), anchor*(1+ww/200), cap,
+                                p.fee/1e6, p.poolLiq, p.d0, p.d1);
+            return rr ? {ww, rr} : null;
+          }).filter(Boolean);
+          if(!rows.length) return "";
+          // одна цель показывает точку, таблица — форму компромисса
+          return `<table class="wtab"><tr><th>ширина</th><th>оборот<br>внутри</th>
+            <th>комиссии</th><th>расхожд.</th><th>итог</th></tr>` +
+            rows.map(({ww,rr})=>`<tr class="${rr.net>=0?"ok":""}">
+              <td>${ww}%</td><td>${(rr.fracVol*100).toFixed(0)}%</td>
+              <td>${money(rr.feesWindow)}</td>
+              <td class="${rr.div>=0?"ok":"bad"}">${rr.div>=0?"+":"−"}${money(Math.abs(rr.div))}</td>
+              <td class="${rr.net>=0?"ok":"bad"}"><b>${rr.net>=0?"+":"−"}${money(Math.abs(rr.net))}</b></td>
+            </tr>`).join("") + `</table>
+            <div class="rec-range dim">итог за 7 дней на капитал ${money(cap)}</div>`;
+        })()}
         ${unreachable?'<div class="rec-warn">цель недостижима на истории этого пула — '+
           'показана ближайшая достижимая граница</div>':''}
       </div><div class="rec-apr ${netMonthPct>=0?"good":"bad"}">${
@@ -1279,6 +1307,67 @@ async function renderClosed(all){
   }catch(_){ }
 }
 
+// ---------- прогноз по открытой позиции ----------
+// волатильность берём из той же выборки свопов: цена в каждом отрезке против
+// цены в предыдущем. Модель — геометрическое блуждание; для стейбл-пар она
+// слегка завышает шанс ухода, потому что не знает про возврат к единице.
+function volFromSample(sample){
+  const byChunk = new Map();
+  for(const x of sample.swaps){
+    const k = Math.floor(x.b/9000);
+    if(!byChunk.has(k)) byChunk.set(k, []);
+    byChunk.get(k).push(x);
+  }
+  const pts = [...byChunk.entries()].sort((a,b)=>a[0]-b[0])
+    .map(([k,arr])=>({b:arr[arr.length-1].b, p:arr[arr.length-1].p}));
+  if(pts.length < 4) return null;
+  const rs = [];
+  for(let i=1;i<pts.length;i++){
+    const dt = (pts[i].b - pts[i-1].b)/RATE/86400;      // в сутках
+    if(dt <= 0 || pts[i-1].p <= 0) continue;
+    rs.push(Math.log(pts[i].p/pts[i-1].p)/Math.sqrt(dt)); // нормируем на шаг
+  }
+  if(rs.length < 3) return null;
+  const mu = rs.reduce((a,b)=>a+b,0)/rs.length;
+  const v = rs.reduce((a,b)=>a+(b-mu)*(b-mu),0)/rs.length;
+  return Math.sqrt(v)*Math.sqrt(365);                   // годовая
+}
+
+function projectPosition(p, sample, days=30, npath=800){
+  const sigma = volFromSample(sample);
+  if(sigma===null) return null;
+  const volDay = sample.coverage>0
+    ? sample.swaps.reduce((a,x)=>a+x.v*x.p,0)/sample.coverage/sample.days : 0;
+  const share = p.poolLiq>0 ? p.L/(p.poolLiq) : 0;
+  const feeHour = volDay/24*(p.fee/1e6)*share;
+  const H = days*24, step = sigma/Math.sqrt(365*24);
+  let seed = 987654321 >>> 0;
+  const rnd = () => { seed ^= seed<<13; seed>>>=0; seed ^= seed>>17; seed ^= seed<<5;
+    seed>>>=0; return seed/4294967296; };
+  const gauss = () => { let u=0,v=0; while(!u) u=rnd(); while(!v) v=rnd();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); };
+  const fees=[]; let inr=0, hitLo=0, hitHi=0, exits=[];
+  for(let k=0;k<npath;k++){
+    let pr=p.price, f=0, first=null;
+    let lo=false, hi=false;
+    for(let h=1;h<=H;h++){
+      pr *= Math.exp(-0.5*step*step + step*gauss());
+      if(pr>=p.lo && pr<=p.hi){ inr++; f += feeHour; }
+      else { if(first===null) first=h/24; if(pr<p.lo) lo=true; else hi=true; }
+    }
+    if(lo) hitLo++; if(hi) hitHi++;
+    if(first!==null) exits.push(first);
+    fees.push(f);
+  }
+  fees.sort((a,b)=>a-b); exits.sort((a,b)=>a-b);
+  const q = (arr,x) => arr.length ? arr[Math.min(arr.length-1, Math.floor(arr.length*x))] : null;
+  return {sigma, volDay, days,
+    feesMed:q(fees,0.5), feesP10:q(fees,0.10), feesP90:q(fees,0.90),
+    inRangePct: inr/(npath*H)*100,
+    pLo: hitLo/npath*100, pHi: hitHi/npath*100,
+    exitMed: q(exits,0.5), pStay: (npath-exits.length)/npath*100};
+}
+
 // ---------- когда реинвестировать комиссии ----------
 // сложный процент растёт с частотой, газ — тоже. Оптимум там, где прирост от
 // более частого довнесения перестаёт покрывать стоимость операции.
@@ -1496,6 +1585,8 @@ function tileHtml(p){
         <span class="v">${fmtUsd(activeLiquidityUsd(p.poolLiq,p.price,p.t0.decimals,p.t1.decimals,1.0))} (±0,5%)</span></div>
       <div class="row vol-row"><span class="k">Оборот пула</span>
         <span class="v vol-val">нажмите для расчёта</span></div>
+      <div class="row proj-row"><span class="k">Прогноз на 30 дней</span>
+        <span class="v proj-val">нажмите для расчёта</span></div>
       <div class="row"><span class="k">Протокол</span>
         <span class="v">${p.isV4?"Uniswap v4":"Uniswap v3"}</span></div>
       <p class="note mono">${p.isV4?"poolId ":""}${p.pool}</p>
@@ -1504,6 +1595,7 @@ function tileHtml(p){
 
 function bindTile(el, p){
   const volVal = el.querySelector(".vol-val");
+  const projVal = el.querySelector(".proj-val");
   const head = el.querySelector(".tile-head");
   head.style.cursor = "pointer";
   head.addEventListener("click", async ()=>{
@@ -1516,6 +1608,32 @@ function bindTile(el, p){
         volVal.textContent = fmtUsd(v.vol0*p.price)+"/сут"+
           (v.missing?` (частично)`:"");
       }catch(e){ volVal.textContent = "ошибка"; }
+    }
+    if(willOpen && projVal && projVal.textContent==="нажмите для расчёта"){
+      projVal.textContent = "считаю…";
+      try{
+        const smp = await poolSwapSample(p.pool, p.t0.decimals, p.t1.decimals,
+                                         !!p.isV4, 7, 24);
+        const r = projectPosition(p, smp);
+        if(!r){ projVal.textContent = "мало данных"; return; }
+        const row = projVal.closest(".row");
+        projVal.innerHTML = `${money(r.feesMed)} комиссий
+          <span class="dim">(${money(r.feesP10)} … ${money(r.feesP90)})</span>`;
+        const add = document.createElement("div");
+        add.className = "proj-extra";
+        add.innerHTML = `
+          <div>в диапазоне <b>${r.inRangePct.toFixed(0)}%</b> времени ·
+            волатильность ${(r.sigma*100).toFixed(0)}%/год</div>
+          <div>уйдёт ниже диапазона <b>${r.pLo.toFixed(0)}%</b>${
+            p.t0 && STABLES.has((p.t1.symbol||"").toUpperCase())
+              ? " (выкуп "+p.t0.symbol+")" : ""} ·
+            выше <b>${r.pHi.toFixed(0)}%</b></div>
+          <div>${r.exitMed===null ? "выход из диапазона маловероятен"
+            : "медианный срок до первого выхода <b>"+
+              (r.exitMed<1 ? (r.exitMed*24).toFixed(0)+" ч" : r.exitMed.toFixed(1)+" сут")+
+              "</b>, останется внутри весь срок "+r.pStay.toFixed(0)+"%"}</div>`;
+        row.after(add);
+      }catch(e){ projVal.textContent = "ошибка"; }
     }
   });
 }
