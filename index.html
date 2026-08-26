@@ -202,7 +202,16 @@ input[type=text]{width:100%;padding:11px;border-radius:10px;border:1px solid var
 </div>
 
 <script>
-const RPCS = ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one.publicnode.com"];
+// eth_getLogs из публичных узлов отдаёт ТОЛЬКО официальный arb1: publicnode
+// требует платный архив, 1rpc режет окно до 50 блоков, blastapi тоже ограничивает.
+// Поэтому логи идут только сюда, а обычные вызовы разносим по остальным —
+// так они перестают конкурировать за лимит arb1, из-за чего он отдавал 403.
+const RPC_LOGS = "https://arb1.arbitrum.io/rpc";
+const RPCS = ["https://arb1.arbitrum.io/rpc",
+              "https://arbitrum-one-rpc.publicnode.com",
+              "https://arbitrum-one.public.blastapi.io",
+              "https://arbitrum.publicnode.com"];
+const LOG_METHODS = new Set(["eth_getLogs"]);
 const NPM = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
 const FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const RATE = 3.9947;
@@ -295,16 +304,29 @@ function keccak256Hex(hexNo0x){
 }
 
 let rpcIdx = 0;
+async function rpcOnce(url, method, params){
+  const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method,params})});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message||"rpc error");
+  return j.result;
+}
 async function rpc(method, params){
+  if (LOG_METHODS.has(method)){
+    // альтернативы логи не отдают, поэтому здесь не перебор узлов, а повтор
+    let last;
+    for (let a=0;a<3;a++){
+      try{ return await rpcOnce(RPC_LOGS, method, params); }
+      catch(e){ last=e; await new Promise(r=>setTimeout(r, 400 + 700*a)); }
+    }
+    throw last;
+  }
   for (let n=0;n<RPCS.length;n++){
     const url = RPCS[(rpcIdx+n)%RPCS.length];
     try{
-      const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({jsonrpc:"2.0",id:1,method,params})});
-      const j = await r.json();
-      if (j.error) throw new Error(j.error.message||"rpc error");
+      const res = await rpcOnce(url, method, params);
       rpcIdx = (rpcIdx+n)%RPCS.length;
-      return j.result;
+      return res;
     }catch(e){ if (n===RPCS.length-1) throw e; }
   }
 }
@@ -901,28 +923,63 @@ async function arbiscanTxList(owner){
   return {error: last};
 }
 
+// набор токенов кошелька: базовый список плюс всё, что встречается в позициях.
+// раньше считались только WETH и USD₮0, поэтому лежащий на кошельке USDC
+// в «активы сейчас» не попадал вовсе
+function walletTokenSet(detailed, ethPrice){
+  const m = new Map();
+  const put = (addr, sym, dec, usd) => {
+    if(!addr) return;
+    const k = String(addr).toLowerCase();
+    const cur = m.get(k);
+    if(cur && cur.usd) return;                 // уже с ценой — не перетираем
+    m.set(k, {addr:k, sym, dec, usd});
+  };
+  put(WETH_ADDR, "WETH", 18, ethPrice);
+  put(COIN_V3.USDC, "USDC", 6, 1);
+  put(USDT_ADDR, "USD₮0", 6, 1);
+  put("0xff970a61a04b1ca14834a43f5de4533ebddb5cc8", "USDC.e", 6, 1);
+  for(const p of (detailed||[])){
+    if(!p.t0 || !p.t1) continue;
+    const s0u = (p.t0.symbol||"").toUpperCase(), s1u = (p.t1.symbol||"").toUpperCase();
+    // цену не-стейбла берём из его же пула, если вторая нога — стейбл
+    const u0 = STABLES.has(s0u) ? 1 : (STABLES.has(s1u) ? p.price : 0);
+    const u1 = STABLES.has(s1u) ? 1 : (STABLES.has(s0u) ? 1/p.price : 0);
+    put(p.token0, p.t0.symbol, p.t0.decimals, u0);
+    put(p.token1, p.t1.symbol, p.t1.decimals, u1);
+  }
+  return [...m.values()];
+}
+
 async function loadCapitalStats(detailed){
   try{
-    const [s0, wethBal, usdtBal, nativeBal, nonce, depW, depU] = await Promise.all([
+    const [s0, nativeBal, nonce, depW, depU, depC] = await Promise.all([
       call(WETH_USDT_POOL, SEL.slot0),
-      call(WETH_ADDR, SEL.bal+pad(OWNER)),
-      call(USDT_ADDR, SEL.bal+pad(OWNER)),
       rpc("eth_getBalance",[OWNER,"latest"]),
       rpc("eth_getTransactionCount",[OWNER,"latest"]),
       scanIncomingTransfers(WETH_ADDR, 18, OWNER),
       scanIncomingTransfers(USDT_ADDR, 6, OWNER),
+      scanIncomingTransfers(COIN_V3.USDC, 6, OWNER),
     ]);
     const w0 = words(s0);
     const sq = Number(U(w0[0]))/2**96;
     const price = sq*sq*1e12;   // WETH(18) / USDT(6)
 
-    const walletWeth = Number(U(words(wethBal)[0]))/1e18;
-    const walletUsdt = Number(U(words(usdtBal)[0]))/1e6;
+    const toks = walletTokenSet(detailed, price);
+    const rawBals = await Promise.all(toks.map(t =>
+      call(t.addr, SEL.bal+pad(OWNER)).catch(()=>null)));
+    let walletUsd = 0;
+    toks.forEach((t,i) => {
+      const r = rawBals[i];
+      if(!r || r === "0x") return;
+      const amt = Number(U(words(r)[0]))/Math.pow(10, t.dec);
+      if(amt > 0) walletUsd += amt * (t.usd || 0);
+    });
     const nativeEth = Number(BigInt(nativeBal))/1e18;
     const txCount = Number(BigInt(nonce));
     const poolValue = (detailed||[]).reduce((s,p)=>s+p.value,0);
 
-    const assetsNow = walletWeth*price + walletUsdt + nativeEth*price + poolValue;
+    const assetsNow = walletUsd + nativeEth*price + poolValue;
     // точный газ по чекам; если что-то не получилось прочитать — падаем на оценку
     let gasInfo;
     try{ gasInfo = await exactLpGasUsd(price); }
@@ -961,7 +1018,7 @@ async function loadCapitalStats(detailed){
       const px = await Promise.all(depW.items.map(it=>priceAtBlock(it.block)));
       depW.items.forEach((it,i)=>{ wethDepUsd += it.amount*(px[i]||price); });
     }
-    const depositsUsd = wethDepUsd + depU.total + nativeDepositUsd;
+    const depositsUsd = wethDepUsd + depU.total + depC.total + nativeDepositUsd;
 
     // газ уже учтён внутри depositsUsd (через восстановленный нативный ETH),
     // повторно вычитать его нельзя — иначе двойной счёт
