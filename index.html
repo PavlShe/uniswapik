@@ -1454,7 +1454,7 @@ function tileHtml(p){
     <div class="tile-bar"><div class="now" style="left:${pos}%"></div></div>
     <div class="tile-detail">
       <div class="row"><span class="k">Диапазон</span>
-        <span class="v">$${p.lo.toLocaleString("ru",{maximumFractionDigits:0})} … $${p.hi.toLocaleString("ru",{maximumFractionDigits:0})}</span></div>
+        <span class="v">$${p.lo.toLocaleString("ru",{maximumFractionDigits:p.lo<10?4:0})} … $${p.hi.toLocaleString("ru",{maximumFractionDigits:p.hi<10?4:0})}</span></div>
       <div class="row"><span class="k">Ширина</span>
         <span class="v">${((Math.pow(1.0001,p.tu-p.tl)-1)*100).toFixed(1)}%</span></div>
       <div class="row"><span class="k">Состав</span>
